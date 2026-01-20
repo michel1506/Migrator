@@ -29,11 +29,6 @@ if ! command -v rsync >/dev/null 2>&1; then
     exit 1
 fi
 
-if ! command -v pv >/dev/null 2>&1; then
-    print_error "pv is required for a consistent copy progress bar but was not found."
-    print_info "Please install pv and try again."
-    exit 1
-fi
 
 get_dir_size_bytes() {
     if du -sb "$1" >/dev/null 2>&1; then
@@ -214,12 +209,7 @@ fi
 
 # Copy all files from source to destination with a consistent progress bar
 print_info "Copying files..."
-total_bytes=$(get_dir_size_bytes "$source_domain")
-if [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ] 2>/dev/null; then
-    tar -C "$source_domain" -cf - . | pv -f -p -t -e -r -b -s "$total_bytes" | tar -C "$dest_domain" -xf -
-else
-    tar -C "$source_domain" -cf - . | pv -f -p -t -e -r -b | tar -C "$dest_domain" -xf -
-fi
+rsync -a --info=progress2 --no-inc-recursive "$source_domain"/ "$dest_domain"/
 copy_status=$?
 
 # Check if copy was successful
