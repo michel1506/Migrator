@@ -215,7 +215,11 @@ fi
 # Copy all files from source to destination with a consistent progress bar
 print_info "Copying files..."
 total_bytes=$(get_dir_size_bytes "$source_domain")
-tar -C "$source_domain" -cf - . | pv -s "$total_bytes" | tar -C "$dest_domain" -xf -
+if [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ] 2>/dev/null; then
+    tar -C "$source_domain" -cf - . | pv -f -p -t -e -r -b -s "$total_bytes" | tar -C "$dest_domain" -xf -
+else
+    tar -C "$source_domain" -cf - . | pv -f -p -t -e -r -b | tar -C "$dest_domain" -xf -
+fi
 copy_status=$?
 
 # Check if copy was successful
