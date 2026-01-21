@@ -1,0 +1,32 @@
+# Example configuration for migrate.sh
+# Copy this file and adjust values as needed.
+
+source_domain: "tt-gmbh.de"
+dest_domain: "test.tt-gmbh.de"
+proceed: true
+
+# Database migration settings
+# If db.migrate is false, database migration is skipped.
+db:
+  migrate: true
+  # If true, use source DB details from source_domain/.env(.local)
+  # If false, use the values below
+  source_from_env: true
+  source:
+    host: "localhost"
+    port: 3306
+    name: "source_db"
+    user: "source_user"
+    password: "source_password"
+  dest:
+    host: "localhost"
+    port: 3306
+    name: "d045f262"
+    user: "d045f262"
+    password: "HXBU94bBXu82brJchGbw"
+
+file_copy:
+  delete_existing: true
+
+env_update:
+  update_domains: true
