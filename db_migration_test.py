@@ -2,11 +2,11 @@
 import pymysql
 
 # Set your credentials here
-DB_HOST = "test-shop.tt-gmbh.de"
+DB_HOST = "staging.tt-gmbh.de"
 DB_PORT = 3306
-DB_NAME = "d045ef85"
-DB_USER = "d045ef85"
-DB_PASSWORD = "2E8P2HMJkj4cLniwXd9m"
+DB_NAME = "d045f262"
+DB_USER = "d045f262"
+DB_PASSWORD = "HXBU94bBXu82brJchGbw"
 
 
 def main():
