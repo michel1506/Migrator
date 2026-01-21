@@ -10,6 +10,7 @@ proceed: true
 db:
   migrate: true
   method: "python"
+  update_sales_channel_url: true
   # If true, use source DB details from source_domain/.env(.local)
   # If false, use the values below
   source_from_env: true

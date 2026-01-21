@@ -132,6 +132,7 @@ emit('CFG_DB_DEST_HOST', get_path(data, ['db', 'dest', 'host']))
 emit('CFG_DB_DEST_PORT', get_path(data, ['db', 'dest', 'port']))
 emit('CFG_DB_DEST_USER', get_path(data, ['db', 'dest', 'user']))
 emit('CFG_DB_DEST_PASS', get_path(data, ['db', 'dest', 'password']))
+emit('CFG_DB_UPDATE_SALES_CHANNEL_URL', get_path(data, ['db', 'update_sales_channel_url']))
 
 emit('CFG_DELETE_EXISTING', get_path(data, ['file_copy', 'delete_existing']))
 emit('CFG_UPDATE_DOMAINS', get_path(data, ['env_update', 'update_domains']))
@@ -289,7 +290,7 @@ dst = dict(
     database=os.environ.get("DST_DB") or "",
 )
 
-def connect(conf, server_side=False):
+    def connect(conf, server_side=False):
     return pymysql.connect(
         host=conf["host"],
         port=conf["port"],
@@ -325,12 +326,12 @@ try:
         sys.stdout.write("\r" + line)
         sys.stdout.flush()
 
-    with src_conn.cursor() as src_cur, dst_conn.cursor() as dst_cur:
-        src_cur.execute(
+    with src_conn.cursor() as meta_cur, dst_conn.cursor() as dst_cur:
+        meta_cur.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type='BASE TABLE'",
             (src["database"],),
         )
-        tables = [row[0] for row in src_cur.fetchall()]
+        tables = [row[0] for row in meta_cur.fetchall()]
 
         total_tables = len(tables)
         current_index = 0
@@ -338,26 +339,27 @@ try:
         for table in tables:
             current_index += 1
             render_progress(current_index, total_tables, table)
-            src_cur.execute(f"SHOW CREATE TABLE `{table}`")
-            create_sql = src_cur.fetchone()[1]
+            meta_cur.execute(f"SHOW CREATE TABLE `{table}`")
+            create_sql = meta_cur.fetchone()[1]
             dst_cur.execute(create_sql)
             dst_conn.commit()
 
-            src_cur.execute(f"SELECT * FROM `{table}`")
-            columns = [desc[0] for desc in src_cur.description]
-            if not columns:
-                continue
+            with src_conn.cursor() as data_cur:
+                data_cur.execute(f"SELECT * FROM `{table}`")
+                columns = [desc[0] for desc in data_cur.description]
+                if not columns:
+                    continue
 
-            col_names = ",".join(f"`{c}`" for c in columns)
-            placeholders = ",".join(["%s"] * len(columns))
-            insert_sql = f"INSERT INTO `{table}` ({col_names}) VALUES ({placeholders})"
+                col_names = ",".join(f"`{c}`" for c in columns)
+                placeholders = ",".join(["%s"] * len(columns))
+                insert_sql = f"INSERT INTO `{table}` ({col_names}) VALUES ({placeholders})"
 
-            while True:
-                rows = src_cur.fetchmany(1000)
-                if not rows:
-                    break
-                dst_cur.executemany(insert_sql, rows)
-            dst_conn.commit()
+                while True:
+                    rows = data_cur.fetchmany(1000)
+                    if not rows:
+                        break
+                    dst_cur.executemany(insert_sql, rows)
+                dst_conn.commit()
 
         if total_tables > 0:
             sys.stdout.write("\n")
@@ -372,6 +374,43 @@ try:
 except Exception as exc:
     print(exc)
     sys.exit(1)
+PY
+}
+
+update_sales_channel_domain_url() {
+    local host="$1" port="$2" user="$3" pass="$4" name="$5"
+    local source="$6" dest="$7" method="$8"
+
+    if [ "$method" = "mysql" ]; then
+        mysql -h "${host:-localhost}" -P "$port" -u "$user" -p"$pass" "$name" \
+            -e "UPDATE sales_channel_domain SET url = REPLACE(url, '${source}', '${dest}') WHERE url LIKE '%${source}%';"
+        return $?
+    fi
+
+    ensure_pymysql_available
+    SRC_DOMAIN="$source" DEST_DOMAIN="$dest" DB_HOST="$host" DB_PORT="$port" DB_USER="$user" DB_PASS="$pass" DB_NAME="$name" \
+    "$PYTHON_BIN" - <<'PY'
+import os
+import pymysql
+
+conn = pymysql.connect(
+    host=os.environ.get("DB_HOST") or "localhost",
+    port=int(os.environ.get("DB_PORT") or "3306"),
+    user=os.environ.get("DB_USER") or "",
+    password=os.environ.get("DB_PASS") or "",
+    database=os.environ.get("DB_NAME") or "",
+    charset="utf8mb4",
+    autocommit=True,
+)
+src = os.environ.get("SRC_DOMAIN") or ""
+dst = os.environ.get("DEST_DOMAIN") or ""
+
+with conn.cursor() as cur:
+    cur.execute(
+        "UPDATE sales_channel_domain SET url = REPLACE(url, %s, %s) WHERE url LIKE %s",
+        (src, dst, f"%{src}%"),
+    )
+conn.close()
 PY
 }
 
@@ -636,8 +675,24 @@ if [ -n "$env_file" ]; then
         fi
         if [ $? -eq 0 ]; then
             print_success "Database migration completed successfully."
-            update_db_in_env "$dest_domain/.env.local"
-            update_db_in_env "$dest_domain/public/.env"
+            if [ -n "$CFG_DB_UPDATE_SALES_CHANNEL_URL" ]; then
+                if is_true "$CFG_DB_UPDATE_SALES_CHANNEL_URL"; then
+                    sales_channel_confirm="y"
+                else
+                    sales_channel_confirm="n"
+                fi
+            else
+                read -p "Update sales_channel_domain.url to replace $source_domain with $dest_domain? (y/n): " sales_channel_confirm
+            fi
+            if [ "$sales_channel_confirm" = "y" ] || [ "$sales_channel_confirm" = "Y" ]; then
+                update_sales_channel_domain_url "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name" "$source_domain" "$dest_domain" "$db_method"
+                if [ $? -eq 0 ]; then
+                    print_success "Updated sales_channel_domain.url."
+                else
+                    print_error "Failed to update sales_channel_domain.url."
+                    exit 1
+                fi
+            fi
         else
             print_error "Database migration failed."
             exit 1
@@ -751,8 +806,24 @@ else
         fi
         if [ $? -eq 0 ]; then
             print_success "Database migration completed successfully."
-            update_db_in_env "$dest_domain/.env.local"
-            update_db_in_env "$dest_domain/public/.env"
+            if [ -n "$CFG_DB_UPDATE_SALES_CHANNEL_URL" ]; then
+                if is_true "$CFG_DB_UPDATE_SALES_CHANNEL_URL"; then
+                    sales_channel_confirm="y"
+                else
+                    sales_channel_confirm="n"
+                fi
+            else
+                read -p "Update sales_channel_domain.url to replace $source_domain with $dest_domain? (y/n): " sales_channel_confirm
+            fi
+            if [ "$sales_channel_confirm" = "y" ] || [ "$sales_channel_confirm" = "Y" ]; then
+                update_sales_channel_domain_url "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name" "$source_domain" "$dest_domain" "$db_method"
+                if [ $? -eq 0 ]; then
+                    print_success "Updated sales_channel_domain.url."
+                else
+                    print_error "Failed to update sales_channel_domain.url."
+                    exit 1
+                fi
+            fi
         else
             print_error "Database migration failed."
             exit 1
@@ -827,6 +898,9 @@ if [ "$DB_ONLY" = false ]; then
         print_success "Total files copied: $file_count"
         echo ""
         print_info "Destination: $dest_domain"
+
+        update_db_in_env "$dest_domain/.env.local"
+        update_db_in_env "$dest_domain/public/.env"
 
         # Update domain references inside destination env files
         if [ -n "$CFG_UPDATE_DOMAINS" ]; then
