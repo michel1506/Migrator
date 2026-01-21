@@ -9,6 +9,7 @@ proceed: true
 # If db.migrate is false, database migration is skipped.
 db:
   migrate: true
+  method: "python"
   # If true, use source DB details from source_domain/.env(.local)
   # If false, use the values below
   source_from_env: true

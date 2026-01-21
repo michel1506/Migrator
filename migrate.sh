@@ -59,16 +59,19 @@ is_true() {
     esac
 }
 
-ensure_yaml_available() {
+ensure_python_available() {
     if command -v python3 >/dev/null 2>&1; then
         PYTHON_BIN="python3"
     elif command -v python >/dev/null 2>&1; then
         PYTHON_BIN="python"
     else
-        print_error "Python is required to read YAML config files."
-        print_info "Install Python or run without --config."
+        print_error "Python is required for software DB migration."
         exit 1
     fi
+}
+
+ensure_yaml_available() {
+    ensure_python_available
 
     if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
 import yaml
@@ -116,6 +119,7 @@ emit('CFG_DEST_DOMAIN', get_path(data, ['dest_domain']))
 emit('CFG_PROCEED', get_path(data, ['proceed']))
 
 emit('CFG_DB_MIGRATE', get_path(data, ['db', 'migrate']))
+emit('CFG_DB_METHOD', get_path(data, ['db', 'method']))
 emit('CFG_DB_SOURCE_FROM_ENV', get_path(data, ['db', 'source_from_env']))
 emit('CFG_DB_SOURCE_HOST', get_path(data, ['db', 'source', 'host']))
 emit('CFG_DB_SOURCE_PORT', get_path(data, ['db', 'source', 'port']))
@@ -128,7 +132,6 @@ emit('CFG_DB_DEST_HOST', get_path(data, ['db', 'dest', 'host']))
 emit('CFG_DB_DEST_PORT', get_path(data, ['db', 'dest', 'port']))
 emit('CFG_DB_DEST_USER', get_path(data, ['db', 'dest', 'user']))
 emit('CFG_DB_DEST_PASS', get_path(data, ['db', 'dest', 'password']))
-emit('CFG_DB_DROP_EXISTING', get_path(data, ['db', 'drop_existing']))
 
 emit('CFG_DELETE_EXISTING', get_path(data, ['file_copy', 'delete_existing']))
 emit('CFG_UPDATE_DOMAINS', get_path(data, ['env_update', 'update_domains']))
@@ -228,6 +231,129 @@ ensure_destination_db() {
         fi
         print_success "Created destination database '$name'."
     fi
+}
+
+ensure_pymysql_available() {
+    ensure_python_available
+    if ! "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import pymysql
+PY
+    then
+        print_error "PyMySQL is required for software DB migration."
+        print_info "Install it with: pip install pymysql"
+        exit 1
+    fi
+}
+
+run_mysqldump_to_mysql() {
+    local src_host="$1" src_port="$2" src_user="$3" src_pass="$4" src_db="$5"
+    local dst_host="$6" dst_port="$7" dst_user="$8" dst_pass="$9" dst_db="${10}"
+
+    local dump_opts=(--single-transaction --routines --events --triggers --set-gtid-purged=OFF --no-tablespaces)
+    if mysqldump --help 2>/dev/null | grep -q -- '--skip-definer'; then
+        dump_opts+=(--skip-definer)
+        mysqldump -h "${src_host:-localhost}" -P "$src_port" -u "$src_user" -p"$src_pass" "${dump_opts[@]}" "$src_db" \
+            | mysql -h "${dst_host:-localhost}" -P "$dst_port" -u "$dst_user" -p"$dst_pass" "$dst_db"
+    else
+        mysqldump -h "${src_host:-localhost}" -P "$src_port" -u "$src_user" -p"$src_pass" "${dump_opts[@]}" "$src_db" \
+            | sed -E "s/DEFINER=\`[^\`]+\`@\`[^\`]+\`/DEFINER=CURRENT_USER/g" \
+            | mysql -h "${dst_host:-localhost}" -P "$dst_port" -u "$dst_user" -p"$dst_pass" "$dst_db"
+    fi
+}
+
+run_python_migration() {
+    local src_host="$1" src_port="$2" src_user="$3" src_pass="$4" src_db="$5"
+    local dst_host="$6" dst_port="$7" dst_user="$8" dst_pass="$9" dst_db="${10}"
+
+    ensure_pymysql_available
+
+    SRC_HOST="$src_host" SRC_PORT="$src_port" SRC_USER="$src_user" SRC_PASS="$src_pass" SRC_DB="$src_db" \
+    DST_HOST="$dst_host" DST_PORT="$dst_port" DST_USER="$dst_user" DST_PASS="$dst_pass" DST_DB="$dst_db" \
+    "$PYTHON_BIN" - <<'PY'
+import os
+import sys
+import pymysql
+
+src = dict(
+    host=os.environ.get("SRC_HOST") or "localhost",
+    port=int(os.environ.get("SRC_PORT") or "3306"),
+    user=os.environ.get("SRC_USER") or "",
+    password=os.environ.get("SRC_PASS") or "",
+    database=os.environ.get("SRC_DB") or "",
+)
+dst = dict(
+    host=os.environ.get("DST_HOST") or "localhost",
+    port=int(os.environ.get("DST_PORT") or "3306"),
+    user=os.environ.get("DST_USER") or "",
+    password=os.environ.get("DST_PASS") or "",
+    database=os.environ.get("DST_DB") or "",
+)
+
+def connect(conf, server_side=False):
+    return pymysql.connect(
+        host=conf["host"],
+        port=conf["port"],
+        user=conf["user"],
+        password=conf["password"],
+        database=conf["database"],
+        charset="utf8mb4",
+        autocommit=False,
+        cursorclass=pymysql.cursors.SSCursor if server_side else pymysql.cursors.Cursor,
+    )
+
+try:
+    src_conn = connect(src, server_side=True)
+    dst_conn = connect(dst, server_side=False)
+
+    with dst_conn.cursor() as dst_cur:
+        dst_cur.execute("SET FOREIGN_KEY_CHECKS=0;")
+        dst_cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type='BASE TABLE'",
+            (dst["database"],),
+        )
+        for (table_name,) in dst_cur.fetchall():
+            dst_cur.execute(f"DROP TABLE IF EXISTS `{table_name}`")
+        dst_conn.commit()
+
+    with src_conn.cursor() as src_cur, dst_conn.cursor() as dst_cur:
+        src_cur.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type='BASE TABLE'",
+            (src["database"],),
+        )
+        tables = [row[0] for row in src_cur.fetchall()]
+
+        for table in tables:
+            src_cur.execute(f"SHOW CREATE TABLE `{table}`")
+            create_sql = src_cur.fetchone()[1]
+            dst_cur.execute(create_sql)
+            dst_conn.commit()
+
+            src_cur.execute(f"SELECT * FROM `{table}`")
+            columns = [desc[0] for desc in src_cur.description]
+            if not columns:
+                continue
+
+            col_names = ",".join(f"`{c}`" for c in columns)
+            placeholders = ",".join(["%s"] * len(columns))
+            insert_sql = f"INSERT INTO `{table}` ({col_names}) VALUES ({placeholders})"
+
+            while True:
+                rows = src_cur.fetchmany(1000)
+                if not rows:
+                    break
+                dst_cur.executemany(insert_sql, rows)
+            dst_conn.commit()
+
+    with dst_conn.cursor() as dst_cur:
+        dst_cur.execute("SET FOREIGN_KEY_CHECKS=1;")
+        dst_conn.commit()
+
+    src_conn.close()
+    dst_conn.close()
+except Exception as exc:
+    print(exc)
+    sys.exit(1)
+PY
 }
 
 update_domain_in_env() {
@@ -471,10 +597,30 @@ if [ -n "$env_file" ]; then
             dest_db_pass="$db_pass"
         fi
 
+        db_method="$CFG_DB_METHOD"
+        if [ -z "$db_method" ]; then
+            read -p "Select DB migration method (python/mysql) [python]: " db_method
+            db_method=${db_method:-python}
+        fi
+        db_method=$(echo "$db_method" | tr '[:upper:]' '[:lower:]')
+        if [ "$db_method" = "mysql" ]; then
+            if ! command -v mysqldump >/dev/null 2>&1 || ! command -v mysql >/dev/null 2>&1; then
+                print_error "mysqldump and mysql are required for mysql method."
+                print_info "Choose python method or install mysql client tools."
+                exit 1
+            fi
+        else
+            ensure_pymysql_available
+        fi
+
         ensure_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
 
         print_info "Migrating database..."
-        mysqldump -h "${db_host:-localhost}" -P "$db_port" -u "$db_user" -p"$db_pass" "$db_name" | mysql -h "${dest_db_host:-localhost}" -P "$dest_db_port" -u "$dest_db_user" -p"$dest_db_pass" "$dest_db_name"
+        if [ "$db_method" = "mysql" ]; then
+            run_mysqldump_to_mysql "$db_host" "$db_port" "$db_user" "$db_pass" "$db_name" "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+        else
+            run_python_migration "$db_host" "$db_port" "$db_user" "$db_pass" "$db_name" "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+        fi
         if [ $? -eq 0 ]; then
             print_success "Database migration completed successfully."
             update_db_in_env "$dest_domain/.env.local"
@@ -572,10 +718,30 @@ else
             dest_db_pass="$db_pass"
         fi
 
+        db_method="$CFG_DB_METHOD"
+        if [ -z "$db_method" ]; then
+            read -p "Select DB migration method (python/mysql) [python]: " db_method
+            db_method=${db_method:-python}
+        fi
+        db_method=$(echo "$db_method" | tr '[:upper:]' '[:lower:]')
+        if [ "$db_method" = "mysql" ]; then
+            if ! command -v mysqldump >/dev/null 2>&1 || ! command -v mysql >/dev/null 2>&1; then
+                print_error "mysqldump and mysql are required for mysql method."
+                print_info "Choose python method or install mysql client tools."
+                exit 1
+            fi
+        else
+            ensure_pymysql_available
+        fi
+
         ensure_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
 
         print_info "Migrating database..."
-        mysqldump -h "$db_host" -P "$db_port" -u "$db_user" -p"$db_pass" "$db_name" | mysql -h "$dest_db_host" -P "$dest_db_port" -u "$dest_db_user" -p"$dest_db_pass" "$dest_db_name"
+        if [ "$db_method" = "mysql" ]; then
+            run_mysqldump_to_mysql "$db_host" "$db_port" "$db_user" "$db_pass" "$db_name" "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+        else
+            run_python_migration "$db_host" "$db_port" "$db_user" "$db_pass" "$db_name" "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+        fi
         if [ $? -eq 0 ]; then
             print_success "Database migration completed successfully."
             update_db_in_env "$dest_domain/.env.local"

@@ -25,7 +25,7 @@ Migrate a domain folder and optionally its MySQL database using `migrate.sh`.
 
 ## YAML Config
 
-Copy `migrate.config.example.yaml`, adjust values, then run with `--config`. Any missing values still prompt interactively. Set `db.source_from_env` to choose whether the source DB is read from the source domain env file. The destination database is always cleared before import.
+Copy `migrate.config.example.yaml`, adjust values, then run with `--config`. Any missing values still prompt interactively. Set `db.method` to `python` (software migration) or `mysql` (mysqldump|mysql). Set `db.source_from_env` to choose whether the source DB is read from the source domain env file. The destination database is always cleared before import.
 
 ```yaml
 source_domain: "tt-gmbh.de"
@@ -34,6 +34,7 @@ proceed: true
 
 db:
   migrate: true
+  method: "python"
   source_from_env: true
   source:
     host: "localhost"
