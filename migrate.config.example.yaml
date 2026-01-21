@@ -2,7 +2,7 @@
 # Copy this file and adjust values as needed.
 
 source_domain: "tt-gmbh.de"
-dest_domain: "test.tt-gmbh.de"
+dest_domain: "staging.tt-gmbh.de"
 proceed: true
 
 # Database migration settings

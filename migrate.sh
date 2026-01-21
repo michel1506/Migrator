@@ -315,6 +315,16 @@ try:
             dst_cur.execute(f"DROP TABLE IF EXISTS `{table_name}`")
         dst_conn.commit()
 
+    def render_progress(current, total, table):
+        width = 30
+        if total <= 0:
+            return
+        filled = int(width * current / total)
+        bar = "#" * filled + "-" * (width - filled)
+        line = f"[{bar}] {current}/{total} {table}"
+        sys.stdout.write("\r" + line)
+        sys.stdout.flush()
+
     with src_conn.cursor() as src_cur, dst_conn.cursor() as dst_cur:
         src_cur.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type='BASE TABLE'",
@@ -322,7 +332,12 @@ try:
         )
         tables = [row[0] for row in src_cur.fetchall()]
 
+        total_tables = len(tables)
+        current_index = 0
+
         for table in tables:
+            current_index += 1
+            render_progress(current_index, total_tables, table)
             src_cur.execute(f"SHOW CREATE TABLE `{table}`")
             create_sql = src_cur.fetchone()[1]
             dst_cur.execute(create_sql)
@@ -343,6 +358,10 @@ try:
                     break
                 dst_cur.executemany(insert_sql, rows)
             dst_conn.commit()
+
+        if total_tables > 0:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
     with dst_conn.cursor() as dst_cur:
         dst_cur.execute("SET FOREIGN_KEY_CHECKS=1;")
@@ -499,12 +518,6 @@ if [ -n "$env_file" ]; then
         read -p "Do you want to migrate the database using $env_file? (y/n): " db_confirm
     fi
     if [ "$db_confirm" = "y" ] || [ "$db_confirm" = "Y" ]; then
-        if ! command -v mysqldump >/dev/null 2>&1 || ! command -v mysql >/dev/null 2>&1; then
-            print_error "mysqldump and mysql are required for database migration."
-            print_info "Please install them and try again."
-            exit 1
-        fi
-
         use_env_source=false
         if [ -n "$CFG_DB_SOURCE_FROM_ENV" ]; then
             if is_true "$CFG_DB_SOURCE_FROM_ENV"; then
@@ -643,12 +656,6 @@ else
         read -p "Do you want to enter database details manually? (y/n): " manual_db_confirm
     fi
     if [ "$manual_db_confirm" = "y" ] || [ "$manual_db_confirm" = "Y" ]; then
-        if ! command -v mysqldump >/dev/null 2>&1 || ! command -v mysql >/dev/null 2>&1; then
-            print_error "mysqldump and mysql are required for database migration."
-            print_info "Please install them and try again."
-            exit 1
-        fi
-
         db_host=${CFG_DB_SOURCE_HOST:-$db_host}
         if [ -z "$db_host" ]; then
             read -p "Enter DB host (default: localhost): " db_host
@@ -806,9 +813,9 @@ if [ "$DB_ONLY" = false ]; then
     print_info "Copying files..."
     total_bytes=$(get_dir_size_bytes "$source_domain")
     if [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ] 2>/dev/null; then
-        tar -C "$source_domain" -cf - . | pv -s "$total_bytes" | tar -C "$dest_domain" -xf -
+        tar -C "$source_domain" -cf - . | pv -pterb -s "$total_bytes" | tar -C "$dest_domain" -xf -
     else
-        tar -C "$source_domain" -cf - . | pv | tar -C "$dest_domain" -xf -
+        tar -C "$source_domain" -cf - . | pv -pterb | tar -C "$dest_domain" -xf -
     fi
     copy_status=$?
 
