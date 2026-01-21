@@ -52,6 +52,8 @@ db:
 
 file_copy:
   delete_existing: false
+  exclude_paths: "var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media"
+  incremental_media: true
 
 env_update:
   update_domains: true

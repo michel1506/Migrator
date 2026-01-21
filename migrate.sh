@@ -135,6 +135,8 @@ emit('CFG_DB_DEST_PASS', get_path(data, ['db', 'dest', 'password']))
 emit('CFG_DB_UPDATE_SALES_CHANNEL_URL', get_path(data, ['db', 'update_sales_channel_url']))
 
 emit('CFG_DELETE_EXISTING', get_path(data, ['file_copy', 'delete_existing']))
+emit('CFG_COPY_EXCLUDE_PATHS', get_path(data, ['file_copy', 'exclude_paths']))
+emit('CFG_INCREMENTAL_MEDIA', get_path(data, ['file_copy', 'incremental_media']))
 emit('CFG_UPDATE_DOMAINS', get_path(data, ['env_update', 'update_domains']))
 PY
 )"
@@ -145,11 +147,6 @@ if [ "$DB_ONLY" = false ]; then
     if ! command -v rsync >/dev/null 2>&1; then
         print_error "rsync is required for progress bars but was not found."
         print_info "Please install rsync and try again."
-        exit 1
-    fi
-    if ! command -v pv >/dev/null 2>&1; then
-        print_error "pv is required for the copy progress bar but was not found."
-        print_info "Please install pv and try again."
         exit 1
     fi
 fi
@@ -833,6 +830,41 @@ fi
 
 # File copy (skipped in --db-only mode)
 if [ "$DB_ONLY" = false ]; then
+    excludes=()
+    exclude_input=""
+    if [ -n "$CFG_COPY_EXCLUDE_PATHS" ]; then
+        exclude_input="$CFG_COPY_EXCLUDE_PATHS"
+    else
+        read -p "Enter comma-separated paths to exclude (e.g., var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media) or leave empty: " exclude_input
+    fi
+    if [ -n "$exclude_input" ]; then
+        IFS=',' read -ra raw_excludes <<< "$exclude_input"
+        for item in "${raw_excludes[@]}"; do
+            path=$(echo "$item" | sed 's/^ *//;s/ *$//')
+            if [ -n "$path" ]; then
+                excludes+=("--exclude=$path")
+            fi
+        done
+    fi
+
+    incremental_media=false
+    if [ -n "$CFG_INCREMENTAL_MEDIA" ]; then
+        if is_true "$CFG_INCREMENTAL_MEDIA"; then
+            incremental_media=true
+        fi
+    else
+        if [ -d "$dest_domain/public/media" ]; then
+            read -p "Incrementally rsync public/media (keep existing files)? (y/n): " media_confirm
+            if [ "$media_confirm" = "y" ] || [ "$media_confirm" = "Y" ]; then
+                incremental_media=true
+            fi
+        fi
+    fi
+
+    if [ "$incremental_media" = true ]; then
+        excludes+=("--exclude=public/media/")
+    fi
+
     # Create destination directory if it doesn't exist
     if [ -d "$dest_domain" ]; then
         # Check if destination directory contains any files
@@ -854,7 +886,11 @@ if [ "$DB_ONLY" = false ]; then
             if [ "$delete_confirm" = "y" ] || [ "$delete_confirm" = "Y" ]; then
                 print_info "Deleting existing files in $dest_domain..."
                 empty_dir=$(mktemp -d)
-                rsync -a --delete --info=progress2 "$empty_dir"/ "$dest_domain"/
+                if [ "$incremental_media" = true ]; then
+                    rsync -a --delete --info=progress2 --exclude="public/media/" "$empty_dir"/ "$dest_domain"/
+                else
+                    rsync -a --delete --info=progress2 "$empty_dir"/ "$dest_domain"/
+                fi
                 delete_status=$?
                 rmdir "$empty_dir" 2>/dev/null
                 if [ $delete_status -eq 0 ]; then
@@ -882,13 +918,15 @@ if [ "$DB_ONLY" = false ]; then
 
     # Copy all files from source to destination with a progress bar
     print_info "Copying files..."
-    total_bytes=$(get_dir_size_bytes "$source_domain")
-    if [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ] 2>/dev/null; then
-        tar -C "$source_domain" -cf - . | pv -pterb -s "$total_bytes" | tar -C "$dest_domain" -xf -
-    else
-        tar -C "$source_domain" -cf - . | pv -pterb | tar -C "$dest_domain" -xf -
-    fi
+    rsync -a --info=progress2 "${excludes[@]}" "$source_domain"/ "$dest_domain"/
     copy_status=$?
+
+    if [ $copy_status -eq 0 ] && [ "$incremental_media" = true ] && [ -d "$source_domain/public/media" ]; then
+        print_info "Incrementally syncing public/media..."
+        mkdir -p "$dest_domain/public/media"
+        rsync -a --info=progress2 "$source_domain/public/media/" "$dest_domain/public/media/"
+        copy_status=$?
+    fi
 
     # Check if copy was successful
     if [ $copy_status -eq 0 ]; then
