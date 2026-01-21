@@ -290,7 +290,7 @@ dst = dict(
     database=os.environ.get("DST_DB") or "",
 )
 
-    def connect(conf, server_side=False):
+def connect(conf, server_side=False):
     return pymysql.connect(
         host=conf["host"],
         port=conf["port"],
