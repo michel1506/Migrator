@@ -47,6 +47,11 @@ if [ "$DB_ONLY" = false ]; then
         print_info "Please install rsync and try again."
         exit 1
     fi
+    if ! command -v pv >/dev/null 2>&1; then
+        print_error "pv is required for the copy progress bar but was not found."
+        print_info "Please install pv and try again."
+        exit 1
+    fi
 fi
 
 
@@ -408,9 +413,14 @@ if [ "$DB_ONLY" = false ]; then
         fi
     fi
 
-    # Copy all files from source to destination with a consistent progress bar
+    # Copy all files from source to destination with a progress bar
     print_info "Copying files..."
-    rsync -a --info=progress2 --no-inc-recursive "$source_domain"/ "$dest_domain"/
+    total_bytes=$(get_dir_size_bytes "$source_domain")
+    if [ -n "$total_bytes" ] && [ "$total_bytes" -gt 0 ] 2>/dev/null; then
+        tar -C "$source_domain" -cf - . | pv -s "$total_bytes" | tar -C "$dest_domain" -xf -
+    else
+        tar -C "$source_domain" -cf - . | pv | tar -C "$dest_domain" -xf -
+    fi
     copy_status=$?
 
     # Check if copy was successful
@@ -423,8 +433,13 @@ if [ "$DB_ONLY" = false ]; then
         print_info "Destination: $dest_domain"
 
         # Update domain references inside destination env files
-        update_domain_in_env "$dest_domain/.env.local"
-        update_domain_in_env "$dest_domain/public/.env"
+        read -p "Update domain in $dest_domain/.env.local and $dest_domain/public/.env? (y/n): " update_domain_confirm
+        if [ "$update_domain_confirm" = "y" ] || [ "$update_domain_confirm" = "Y" ]; then
+            update_domain_in_env "$dest_domain/.env.local"
+            update_domain_in_env "$dest_domain/public/.env"
+        else
+            print_info "Skipped updating domains in env files."
+        fi
     else
         print_error "Migration failed during file copy!"
         exit 1
