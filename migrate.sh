@@ -297,9 +297,13 @@ update_wp_config_db() {
 }
 
 run_wp_cli() {
-    local path="$1"
-    shift
-    "${WP_CLI_CMD[@]}" --path="$path" "$@"
+    local path="$1" url="$2"
+    shift 2
+    if [ -n "$url" ]; then
+        "${WP_CLI_CMD[@]}" --path="$path" --url="$url" "$@"
+    else
+        "${WP_CLI_CMD[@]}" --path="$path" "$@"
+    fi
 }
 
 run_wp_migration() {
@@ -307,7 +311,7 @@ run_wp_migration() {
     tmp_sql=$(mktemp)
 
     print_info "Exporting WordPress database using wp-cli..."
-    run_wp_cli "$src" db export "$tmp_sql"
+    run_wp_cli "$src" "$source_domain" db export "$tmp_sql"
     if [ $? -ne 0 ]; then
         print_error "wp-cli export failed."
         rm -f "$tmp_sql"
@@ -315,7 +319,7 @@ run_wp_migration() {
     fi
 
     print_info "Importing WordPress database into destination using wp-cli..."
-    run_wp_cli "$dst" db import "$tmp_sql"
+    run_wp_cli "$dst" "$dest_domain" db import "$tmp_sql"
     if [ $? -ne 0 ]; then
         print_error "wp-cli import failed."
         rm -f "$tmp_sql"
@@ -325,7 +329,7 @@ run_wp_migration() {
     rm -f "$tmp_sql"
 
     print_info "Updating WordPress URLs using wp-cli search-replace..."
-    run_wp_cli "$dst" search-replace "$source_domain" "$dest_domain" --skip-columns=guid --all-tables
+    run_wp_cli "$dst" "$dest_domain" search-replace "$source_domain" "$dest_domain" --skip-columns=guid --all-tables
     if [ $? -ne 0 ]; then
         print_error "wp-cli search-replace failed."
         return 1

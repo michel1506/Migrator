@@ -5,35 +5,9 @@ source_domain: "example.com"
 dest_domain: "staging.example.com"
 proceed: true
 
-# Database migration settings
-# If db.migrate is false, database migration is skipped.
-db:
-  migrate: true
-  method: "python"
-  update_sales_channel_url: true
-  # If true, use source DB details from source_domain/.env(.local)
-  # If false, use the values below
-  source_from_env: true
-  source:
-    host: "localhost"
-    port: 3306
-    name: "source_db"
-    user: "source_user"
-    password: "source_password"
-  # Destination DB credentials are REQUIRED for WordPress migration
-  dest:
-    host: "localhost"
-    port: 3306
-    name: "dest_db"
-    user: "dest_user"
-    password: "dest_password"
-
 file_copy:
   delete_existing: true
   # Comma-separated paths to exclude from copy
   exclude_paths: "wp-content/cache,wp-content/w3tc-cache,wp-content/wp-rocket-cache,wp-content/litespeed,wp-content/debug.log,wp-content/*.log,wp-content/backup,*.zip,*.tar.gz"
-  # If true and dest already has public/media, keep it and rsync incrementally
+  # If true and dest already has wp-content/uploads, keep it and rsync incrementally
   incremental_media: true
-
-env_update:
-  update_domains: true
