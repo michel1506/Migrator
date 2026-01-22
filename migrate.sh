@@ -790,6 +790,9 @@ migrate_wordpress() {
 migrate_shopware() {
     print_info "Running Shopware migration..."
     
+    # Track if database was migrated
+    db_migrated=false
+    
     # Database migration (optional)
     env_file=""
     if [ -f "$source_domain/.env.local" ]; then
@@ -928,6 +931,7 @@ migrate_shopware() {
             fi
             if [ $? -eq 0 ]; then
                 print_success "Database migration completed successfully."
+                db_migrated=true
                 if [ -n "$CFG_DB_UPDATE_SALES_CHANNEL_URL" ]; then
                     if is_true "$CFG_DB_UPDATE_SALES_CHANNEL_URL"; then
                         sales_channel_confirm="y"
@@ -1059,6 +1063,7 @@ migrate_shopware() {
             fi
             if [ $? -eq 0 ]; then
                 print_success "Database migration completed successfully."
+                db_migrated=true
                 if [ -n "$CFG_DB_UPDATE_SALES_CHANNEL_URL" ]; then
                     if is_true "$CFG_DB_UPDATE_SALES_CHANNEL_URL"; then
                         sales_channel_confirm="y"
@@ -1109,25 +1114,29 @@ migrate_shopware() {
             print_info "Skipped updating domains in env files."
         fi
         
-        # Clear and warmup Shopware cache
-        if [ -x "$dest_domain/bin/console" ]; then
-            print_info "Clearing Shopware cache..."
-            (cd "$dest_domain" && bin/console cache:clear)
-            if [ $? -eq 0 ]; then
-                print_success "Cache cleared successfully."
+        # Clear and warmup Shopware cache (only if database was migrated)
+        if [ "$db_migrated" = true ]; then
+            if [ -x "$dest_domain/bin/console" ]; then
+                print_info "Clearing Shopware cache..."
+                (cd "$dest_domain" && bin/console cache:clear)
+                if [ $? -eq 0 ]; then
+                    print_success "Cache cleared successfully."
+                else
+                    print_error "Failed to clear cache."
+                fi
+                
+                print_info "Warming up Shopware cache..."
+                (cd "$dest_domain" && bin/console cache:warmup)
+                if [ $? -eq 0 ]; then
+                    print_success "Cache warmed up successfully."
+                else
+                    print_error "Failed to warm up cache."
+                fi
             else
-                print_error "Failed to clear cache."
-            fi
-            
-            print_info "Warming up Shopware cache..."
-            (cd "$dest_domain" && bin/console cache:warmup)
-            if [ $? -eq 0 ]; then
-                print_success "Cache warmed up successfully."
-            else
-                print_error "Failed to warm up cache."
+                print_info "bin/console not found or not executable in $dest_domain, skipping cache operations."
             fi
         else
-            print_info "bin/console not found or not executable in $dest_domain, skipping cache operations."
+            print_info "Skipping cache operations (database was not migrated)."
         fi
     fi
 }
