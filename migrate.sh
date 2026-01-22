@@ -399,8 +399,11 @@ run_wp_migration() {
     rm -f "$tmp_sql"
 
     # Search-replace using destination wp-cli (already set above)
+    # Skip email columns to avoid breaking email addresses
     print_info "Updating WordPress URLs using wp-cli search-replace..."
-    run_wp_cli "$dst" "$dest_domain" search-replace "$source_domain" "$dest_domain" --skip-columns=guid --all-tables
+    run_wp_cli "$dst" "$dest_domain" search-replace "$source_domain" "$dest_domain" \
+        --skip-columns=guid,user_email,comment_author_email \
+        --all-tables
     if [ $? -ne 0 ]; then
         print_error "wp-cli search-replace failed."
         return 1
@@ -1335,29 +1338,6 @@ fi
 
 print_success "Migration completed!"
 
-        if is_true "$CFG_DB_MIGRATE"; then
-            db_confirm="y"
-        else
-            db_confirm="n"
-        fi
-    else
-        read -p "Do you want to migrate the database using $env_file? (y/n): " db_confirm
-    fi
-    if [ "$db_confirm" = "y" ] || [ "$db_confirm" = "Y" ]; then
-        use_env_source=false
-        if [ -n "$CFG_DB_SOURCE_FROM_ENV" ]; then
-            if is_true "$CFG_DB_SOURCE_FROM_ENV"; then
-                use_env_source=true
-            fi
-        else
-            read -p "Read source DB details from $env_file? (y/n): " source_env_confirm
-            if [ "$source_env_confirm" = "y" ] || [ "$source_env_confirm" = "Y" ]; then
-                use_env_source=true
-            fi
-        fi
-
-        if [ "$use_env_source" = true ]; then
-            # Read DB credentials from .env.local/.env
             db_host=$(get_env_value "DB_HOST" "$env_file")
             db_port=$(get_env_value "DB_PORT" "$env_file")
             db_name=$(get_env_value "DB_DATABASE" "$env_file")
