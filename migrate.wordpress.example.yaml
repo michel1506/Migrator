@@ -6,6 +6,28 @@ dest_domain: "staging.example.com"
 proceed: true
 cms: "wordpress"
 
+db:
+  migrate: true
+  
+  # Source database settings
+  # If source_from_wp_config is true, source DB credentials will be read from source wp-config.php
+  # Otherwise, you can specify them manually below
+  source_from_wp_config: true
+  source:
+    host: "localhost"    # Only used if source_from_wp_config is false
+    port: 3306           # Only used if source_from_wp_config is false
+    name: "source_db"    # Only used if source_from_wp_config is false
+    user: "source_user"  # Only used if source_from_wp_config is false
+    password: "source_pass"  # Only used if source_from_wp_config is false
+  
+  # Destination database settings (required)
+  dest:
+    host: "localhost"
+    port: 3306
+    name: "dest_db"
+    user: "dest_user"
+    password: "dest_pass"
+
 file_copy:
   delete_existing: true
   # Comma-separated paths to exclude from copy

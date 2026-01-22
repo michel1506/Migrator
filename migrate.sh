@@ -131,6 +131,7 @@ emit('CFG_CMS', get_path(data, ['cms']))
 emit('CFG_DB_MIGRATE', get_path(data, ['db', 'migrate']))
 emit('CFG_DB_METHOD', get_path(data, ['db', 'method']))
 emit('CFG_DB_SOURCE_FROM_ENV', get_path(data, ['db', 'source_from_env']))
+emit('CFG_DB_SOURCE_FROM_WP_CONFIG', get_path(data, ['db', 'source_from_wp_config']))
 emit('CFG_DB_SOURCE_HOST', get_path(data, ['db', 'source', 'host']))
 emit('CFG_DB_SOURCE_PORT', get_path(data, ['db', 'source', 'port']))
 emit('CFG_DB_SOURCE_NAME', get_path(data, ['db', 'source', 'name']))
@@ -302,6 +303,15 @@ update_wp_config_db() {
     sed -i "s|define( *'DB_USER'.*|define('DB_USER', '${esc_user}');|" "$file"
     sed -i "s|define( *'DB_PASSWORD'.*|define('DB_PASSWORD', '${esc_pass}');|" "$file"
     sed -i "s|define( *'DB_HOST'.*|define('DB_HOST', '${esc_host}');|" "$file"
+}
+
+update_wp_config_domain() {
+    local file="$1" src_domain="$2" dest_domain="$3"
+    if [ ! -f "$file" ]; then
+        print_error "wp-config.php not found at $file"
+        return 1
+    fi
+    sed -i "s|$src_domain|$dest_domain|g" "$file"
 }
 
 get_wp_config_define() {
@@ -600,6 +610,614 @@ parse_database_url() {
     echo "$user|$pass|$host|$port|$db"
 }
 
+# ========================================
+# WordPress Migration Function
+# ========================================
+migrate_wordpress() {
+    print_info "Running WordPress migration..."
+    
+    # Database migration
+    if [ -n "$CFG_DB_MIGRATE" ]; then
+        if is_true "$CFG_DB_MIGRATE"; then
+            db_migrate_confirm="y"
+        else
+            db_migrate_confirm="n"
+        fi
+    else
+        read -p "Migrate WordPress database? (y/n): " db_migrate_confirm
+    fi
+
+    if [ "$db_migrate_confirm" = "y" ] || [ "$db_migrate_confirm" = "Y" ]; then
+        # Source database settings
+        use_wp_config_source=false
+        if [ -n "$CFG_DB_SOURCE_FROM_WP_CONFIG" ]; then
+            if is_true "$CFG_DB_SOURCE_FROM_WP_CONFIG"; then
+                use_wp_config_source=true
+            fi
+        else
+            if [ -f "$source_domain/wp-config.php" ]; then
+                read -p "Read source DB from wp-config.php? (y/n): " wp_config_confirm
+                if [ "$wp_config_confirm" = "y" ] || [ "$wp_config_confirm" = "Y" ]; then
+                    use_wp_config_source=true
+                fi
+            fi
+        fi
+
+        if [ "$use_wp_config_source" = true ]; then
+            if ! read_wp_config_db "$source_domain/wp-config.php"; then
+                print_error "Failed to read source DB details from wp-config.php."
+                exit 1
+            fi
+            db_host="$WP_SRC_DB_HOST"
+            db_port="$WP_SRC_DB_PORT"
+            db_name="$WP_SRC_DB_NAME"
+            db_user="$WP_SRC_DB_USER"
+            db_pass="$WP_SRC_DB_PASS"
+            print_info "Source WordPress DB: ${db_name} @ ${db_host}:${db_port} (user: ${db_user})"
+        else
+            db_host=${CFG_DB_SOURCE_HOST:-$db_host}
+            db_port=${CFG_DB_SOURCE_PORT:-3306}
+            db_name=${CFG_DB_SOURCE_NAME:-$db_name}
+            db_user=${CFG_DB_SOURCE_USER:-$db_user}
+            db_pass=${CFG_DB_SOURCE_PASS:-$db_pass}
+            
+            if [ -z "$db_name" ] || [ -z "$db_user" ]; then
+                if [ -z "$db_host" ]; then
+                    read -p "Enter source DB host (default: localhost): " db_host
+                    db_host=${db_host:-localhost}
+                fi
+                if [ -z "$db_name" ]; then
+                    read -p "Enter source database name: " db_name
+                fi
+                if [ -z "$db_user" ]; then
+                    read -p "Enter source DB username: " db_user
+                fi
+                if [ -z "$db_pass" ]; then
+                    read -s -p "Enter source DB password: " db_pass
+                    echo ""
+                fi
+            fi
+        fi
+
+        # Destination database settings
+        dest_db_host=${CFG_DB_DEST_HOST:-$dest_db_host}
+        dest_db_port=${CFG_DB_DEST_PORT:-3306}
+        dest_db_name=${CFG_DB_DEST_NAME:-$dest_db_name}
+        dest_db_user=${CFG_DB_DEST_USER:-$dest_db_user}
+        dest_db_pass=${CFG_DB_DEST_PASS:-$dest_db_pass}
+
+        if [ -z "$dest_db_name" ] || [ -z "$dest_db_user" ]; then
+            if [ -z "$dest_db_name" ]; then
+                read -p "Enter destination database name: " dest_db_name
+            fi
+            if [ -z "$dest_db_host" ]; then
+                read -p "Enter destination DB host (default: $db_host): " dest_db_host
+                dest_db_host=${dest_db_host:-$db_host}
+            fi
+            if [ -z "$dest_db_user" ]; then
+                read -p "Enter destination DB username (default: $db_user): " dest_db_user
+                dest_db_user=${dest_db_user:-$db_user}
+            fi
+            if [ -z "$dest_db_pass" ]; then
+                read -s -p "Enter destination DB password (leave empty to keep same): " dest_db_pass
+                echo ""
+            fi
+        fi
+        if [ -z "$dest_db_pass" ]; then
+            dest_db_pass="$db_pass"
+        fi
+
+        print_info "Destination WordPress DB: ${dest_db_name} @ ${dest_db_host}:${dest_db_port} (user: ${dest_db_user})"
+    fi
+
+    # File copy
+    if [ "$DB_ONLY" = false ]; then
+        copy_files_common
+        
+        # Update wp-config.php if DB migration is enabled
+        if [ "$db_migrate_confirm" = "y" ] || [ "$db_migrate_confirm" = "Y" ]; then
+            if [ -f "$dest_domain/wp-config.php" ]; then
+                print_info "Updating wp-config.php with destination database credentials..."
+                update_wp_config_db "$dest_domain/wp-config.php" "$dest_db_host" "$dest_db_port" "$dest_db_name" "$dest_db_user" "$dest_db_pass"
+                if [ $? -ne 0 ]; then
+                    print_error "Failed to update wp-config.php."
+                    exit 1
+                fi
+
+                print_info "Updating wp-config.php domain references..."
+                update_wp_config_domain "$dest_domain/wp-config.php" "$source_domain" "$dest_domain"
+                if [ $? -ne 0 ]; then
+                    print_error "Failed to update wp-config.php domain references."
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+
+    # Database migration via wp-cli
+    if [ "$db_migrate_confirm" = "y" ] || [ "$db_migrate_confirm" = "Y" ]; then
+        wp_cli_available=false
+        if set_wp_cli_cmd "$source_domain"; then
+            wp_cli_available=true
+        fi
+
+        if [ "$wp_cli_available" = true ]; then
+            print_info "Running WordPress migration via wp-cli..."
+            run_wp_migration "$source_domain" "$dest_domain"
+            if [ $? -eq 0 ]; then
+                print_success "WordPress migration completed successfully."
+            else
+                print_error "WordPress migration failed."
+                exit 1
+            fi
+        else
+            print_error "wp-cli not found. Cannot perform WordPress database migration."
+            exit 1
+        fi
+    fi
+}
+
+# ========================================
+# Shopware Migration Function
+# ========================================
+migrate_shopware() {
+    print_info "Running Shopware migration..."
+    
+    # Database migration (optional)
+    env_file=""
+    if [ -f "$source_domain/.env.local" ]; then
+        env_file="$source_domain/.env.local"
+    elif [ -f "$source_domain/.env" ]; then
+        env_file="$source_domain/.env"
+    fi
+
+    if [ -n "$env_file" ]; then
+        echo ""
+        if [ -n "$CFG_DB_MIGRATE" ]; then
+            if is_true "$CFG_DB_MIGRATE"; then
+                db_confirm="y"
+            else
+                db_confirm="n"
+            fi
+        else
+            read -p "Do you want to migrate the database using $env_file? (y/n): " db_confirm
+        fi
+        if [ "$db_confirm" = "y" ] || [ "$db_confirm" = "Y" ]; then
+            use_env_source=false
+            if [ -n "$CFG_DB_SOURCE_FROM_ENV" ]; then
+                if is_true "$CFG_DB_SOURCE_FROM_ENV"; then
+                    use_env_source=true
+                fi
+            else
+                read -p "Read source DB details from $env_file? (y/n): " source_env_confirm
+                if [ "$source_env_confirm" = "y" ] || [ "$source_env_confirm" = "Y" ]; then
+                    use_env_source=true
+                fi
+            fi
+
+            if [ "$use_env_source" = true ]; then
+                # Read DB credentials from .env.local/.env
+                db_host=$(get_env_value "DB_HOST" "$env_file")
+                db_port=$(get_env_value "DB_PORT" "$env_file")
+                db_name=$(get_env_value "DB_DATABASE" "$env_file")
+                db_user=$(get_env_value "DB_USERNAME" "$env_file")
+                db_pass=$(get_env_value "DB_PASSWORD" "$env_file")
+                db_url=$(get_env_value "DATABASE_URL" "$env_file")
+
+                if [ -n "$db_url" ] && ( [ -z "$db_user" ] || [ -z "$db_name" ] ); then
+                    parsed=$(parse_database_url "$db_url")
+                    db_user=$(echo "$parsed" | cut -d '|' -f1)
+                    db_pass=$(echo "$parsed" | cut -d '|' -f2)
+                    db_host=$(echo "$parsed" | cut -d '|' -f3)
+                    db_port=$(echo "$parsed" | cut -d '|' -f4)
+                    db_name=$(echo "$parsed" | cut -d '|' -f5)
+                fi
+            fi
+
+            if [ -z "$db_port" ]; then
+                db_port=3306
+            fi
+
+            if [ "$use_env_source" = false ]; then
+                db_host=${CFG_DB_SOURCE_HOST:-$db_host}
+                db_port=${CFG_DB_SOURCE_PORT:-$db_port}
+                db_name=${CFG_DB_SOURCE_NAME:-$db_name}
+                db_user=${CFG_DB_SOURCE_USER:-$db_user}
+                db_pass=${CFG_DB_SOURCE_PASS:-$db_pass}
+            fi
+
+            if [ -z "$db_name" ] || [ -z "$db_user" ]; then
+                print_error "Could not read DB credentials from .env."
+                exit 1
+            fi
+
+            echo ""
+            print_info "Database source settings:"
+            echo "  Host: $db_host"
+            echo "  Database: $db_name"
+            echo "  User: $db_user"
+            echo "  Port: $db_port"
+            echo ""
+
+            dest_db_name=${CFG_DB_DEST_NAME:-$dest_db_name}
+            if [ -z "$dest_db_name" ]; then
+                read -p "Enter destination database name: " dest_db_name
+            fi
+            if [ -z "$dest_db_name" ]; then
+                print_error "Destination database name cannot be empty!"
+                exit 1
+            fi
+
+            dest_db_host=${CFG_DB_DEST_HOST:-$dest_db_host}
+            if [ -z "$dest_db_host" ]; then
+                read -p "Enter destination DB host (default: $db_host): " dest_db_host
+            fi
+            dest_db_host=${dest_db_host:-$db_host}
+
+            dest_db_port=${CFG_DB_DEST_PORT:-$dest_db_port}
+            if [ -z "$dest_db_port" ]; then
+                read -p "Enter destination DB port (default: $db_port): " dest_db_port
+            fi
+            dest_db_port=${dest_db_port:-$db_port}
+
+            dest_db_user=${CFG_DB_DEST_USER:-$dest_db_user}
+            if [ -z "$dest_db_user" ]; then
+                read -p "Enter destination DB username (default: $db_user): " dest_db_user
+            fi
+            dest_db_user=${dest_db_user:-$db_user}
+
+            dest_db_pass=${CFG_DB_DEST_PASS:-$dest_db_pass}
+            if [ -z "$dest_db_pass" ]; then
+                read -s -p "Enter destination DB password (leave empty to keep same): " dest_db_pass
+                echo ""
+            fi
+            if [ -z "$dest_db_pass" ]; then
+                dest_db_pass="$db_pass"
+            fi
+
+            db_method="$CFG_DB_METHOD"
+            if [ -z "$db_method" ]; then
+                read -p "Select DB migration method (python/mysql) [python]: " db_method
+                db_method=${db_method:-python}
+            fi
+            db_method=$(echo "$db_method" | tr '[:upper:]' '[:lower:]')
+            if [ "$db_method" = "mysql" ]; then
+                if ! command -v mysqldump >/dev/null 2>&1 || ! command -v mysql >/dev/null 2>&1; then
+                    print_error "mysqldump and mysql are required for mysql method."
+                    print_info "Choose python method or install mysql client tools."
+                    exit 1
+                fi
+            else
+                ensure_pymysql_available
+            fi
+
+            ensure_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+
+            print_info "Migrating database..."
+            if [ "$db_method" = "mysql" ]; then
+                run_mysqldump_to_mysql "$db_host" "$db_port" "$db_user" "$db_pass" "$db_name" "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+            else
+                run_python_migration "$db_host" "$db_port" "$db_user" "$db_pass" "$db_name" "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+            fi
+            if [ $? -eq 0 ]; then
+                print_success "Database migration completed successfully."
+                if [ -n "$CFG_DB_UPDATE_SALES_CHANNEL_URL" ]; then
+                    if is_true "$CFG_DB_UPDATE_SALES_CHANNEL_URL"; then
+                        sales_channel_confirm="y"
+                    else
+                        sales_channel_confirm="n"
+                    fi
+                else
+                    read -p "Update sales_channel_domain.url to replace $source_domain with $dest_domain? (y/n): " sales_channel_confirm
+                fi
+                if [ "$sales_channel_confirm" = "y" ] || [ "$sales_channel_confirm" = "Y" ]; then
+                    update_sales_channel_domain_url "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name" "$source_domain" "$dest_domain" "$db_method"
+                    if [ $? -eq 0 ]; then
+                        print_success "Updated sales_channel_domain.url."
+                    else
+                        print_error "Failed to update sales_channel_domain.url."
+                        exit 1
+                    fi
+                fi
+            else
+                print_error "Database migration failed."
+                exit 1
+            fi
+        fi
+    else
+        echo ""
+        print_info "No .env file found in source directory."
+        if [ -n "$CFG_DB_MIGRATE" ]; then
+            if is_true "$CFG_DB_MIGRATE"; then
+                manual_db_confirm="y"
+            else
+                manual_db_confirm="n"
+            fi
+        else
+            read -p "Do you want to enter database details manually? (y/n): " manual_db_confirm
+        fi
+        if [ "$manual_db_confirm" = "y" ] || [ "$manual_db_confirm" = "Y" ]; then
+            db_host=${CFG_DB_SOURCE_HOST:-$db_host}
+            if [ -z "$db_host" ]; then
+                read -p "Enter DB host (default: localhost): " db_host
+            fi
+            db_host=${db_host:-localhost}
+
+            db_port=${CFG_DB_SOURCE_PORT:-$db_port}
+            if [ -z "$db_port" ]; then
+                read -p "Enter DB port (default: 3306): " db_port
+            fi
+            db_port=${db_port:-3306}
+
+            db_name=${CFG_DB_SOURCE_NAME:-$db_name}
+            if [ -z "$db_name" ]; then
+                read -p "Enter source database name: " db_name
+            fi
+
+            db_user=${CFG_DB_SOURCE_USER:-$db_user}
+            if [ -z "$db_user" ]; then
+                read -p "Enter DB username: " db_user
+            fi
+
+            db_pass=${CFG_DB_SOURCE_PASS:-$db_pass}
+            if [ -z "$db_pass" ]; then
+                read -s -p "Enter DB password (leave empty if none): " db_pass
+                echo ""
+            fi
+
+            if [ -z "$db_name" ] || [ -z "$db_user" ]; then
+                print_error "Database name and username are required."
+                exit 1
+            fi
+
+            dest_db_name=${CFG_DB_DEST_NAME:-$dest_db_name}
+            if [ -z "$dest_db_name" ]; then
+                read -p "Enter destination database name: " dest_db_name
+            fi
+            if [ -z "$dest_db_name" ]; then
+                print_error "Destination database name cannot be empty!"
+                exit 1
+            fi
+
+            dest_db_host=${CFG_DB_DEST_HOST:-$dest_db_host}
+            if [ -z "$dest_db_host" ]; then
+                read -p "Enter destination DB host (default: $db_host): " dest_db_host
+            fi
+            dest_db_host=${dest_db_host:-$db_host}
+
+            dest_db_port=${CFG_DB_DEST_PORT:-$dest_db_port}
+            if [ -z "$dest_db_port" ]; then
+                read -p "Enter destination DB port (default: $db_port): " dest_db_port
+            fi
+            dest_db_port=${dest_db_port:-$db_port}
+
+            dest_db_user=${CFG_DB_DEST_USER:-$dest_db_user}
+            if [ -z "$dest_db_user" ]; then
+                read -p "Enter destination DB username (default: $db_user): " dest_db_user
+            fi
+            dest_db_user=${dest_db_user:-$db_user}
+
+            dest_db_pass=${CFG_DB_DEST_PASS:-$dest_db_pass}
+            if [ -z "$dest_db_pass" ]; then
+                read -s -p "Enter destination DB password (leave empty to keep same): " dest_db_pass
+                echo ""
+            fi
+            if [ -z "$dest_db_pass" ]; then
+                dest_db_pass="$db_pass"
+            fi
+
+            db_method="$CFG_DB_METHOD"
+            if [ -z "$db_method" ]; then
+                read -p "Select DB migration method (python/mysql) [python]: " db_method
+                db_method=${db_method:-python}
+            fi
+            db_method=$(echo "$db_method" | tr '[:upper:]' '[:lower:]')
+            if [ "$db_method" = "mysql" ]; then
+                if ! command -v mysqldump >/dev/null 2>&1 || ! command -v mysql >/dev/null 2>&1; then
+                    print_error "mysqldump and mysql are required for mysql method."
+                    print_info "Choose python method or install mysql client tools."
+                    exit 1
+                fi
+            else
+                ensure_pymysql_available
+            fi
+
+            ensure_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+
+            print_info "Migrating database..."
+            if [ "$db_method" = "mysql" ]; then
+                run_mysqldump_to_mysql "$db_host" "$db_port" "$db_user" "$db_pass" "$db_name" "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+            else
+                run_python_migration "$db_host" "$db_port" "$db_user" "$db_pass" "$db_name" "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
+            fi
+            if [ $? -eq 0 ]; then
+                print_success "Database migration completed successfully."
+                if [ -n "$CFG_DB_UPDATE_SALES_CHANNEL_URL" ]; then
+                    if is_true "$CFG_DB_UPDATE_SALES_CHANNEL_URL"; then
+                        sales_channel_confirm="y"
+                    else
+                        sales_channel_confirm="n"
+                    fi
+                else
+                    read -p "Update sales_channel_domain.url to replace $source_domain with $dest_domain? (y/n): " sales_channel_confirm
+                fi
+                if [ "$sales_channel_confirm" = "y" ] || [ "$sales_channel_confirm" = "Y" ]; then
+                    update_sales_channel_domain_url "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name" "$source_domain" "$dest_domain" "$db_method"
+                    if [ $? -eq 0 ]; then
+                        print_success "Updated sales_channel_domain.url."
+                    else
+                        print_error "Failed to update sales_channel_domain.url."
+                        exit 1
+                    fi
+                fi
+            else
+                print_error "Database migration failed."
+                exit 1
+            fi
+        fi
+    fi
+
+    # File copy (skipped in --db-only mode)
+    if [ "$DB_ONLY" = false ]; then
+        copy_files_common
+
+        # Update .env files
+        update_db_in_env "$dest_domain/.env.local"
+        update_db_in_env "$dest_domain/public/.env"
+
+        # Update domain references inside destination env files
+        if [ -n "$CFG_UPDATE_DOMAINS" ]; then
+            if is_true "$CFG_UPDATE_DOMAINS"; then
+                update_domain_confirm="y"
+            else
+                update_domain_confirm="n"
+            fi
+        else
+            read -p "Update domain in $dest_domain/.env.local and $dest_domain/public/.env? (y/n): " update_domain_confirm
+        fi
+        if [ "$update_domain_confirm" = "y" ] || [ "$update_domain_confirm" = "Y" ]; then
+            update_domain_in_env "$dest_domain/.env.local"
+            update_domain_in_env "$dest_domain/public/.env"
+        else
+            print_info "Skipped updating domains in env files."
+        fi
+    fi
+}
+
+# ========================================
+# Common file copy function
+# ========================================
+copy_files_common() {
+    excludes=()
+    exclude_input=""
+    if [ -n "$CFG_COPY_EXCLUDE_PATHS" ]; then
+        exclude_input="$CFG_COPY_EXCLUDE_PATHS"
+    else
+        read -p "Enter comma-separated paths to exclude (e.g., var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media,wp-content/cache,wp-content/w3tc-cache,wp-content/wp-rocket-cache,wp-content/litespeed,wp-content/debug.log,wp-content/*.log,wp-content/backup,*.zip,*.tar.gz) or leave empty: " exclude_input
+    fi
+    if [ -n "$exclude_input" ]; then
+        IFS=',' read -ra raw_excludes <<< "$exclude_input"
+        for item in "${raw_excludes[@]}"; do
+            path=$(echo "$item" | sed 's/^ *//;s/ *$//')
+            if [ -n "$path" ]; then
+                excludes+=("--exclude=$path")
+            fi
+        done
+    fi
+
+    incremental_media=false
+    incremental_wp_uploads=false
+    if [ -n "$CFG_INCREMENTAL_MEDIA" ]; then
+        if is_true "$CFG_INCREMENTAL_MEDIA"; then
+            incremental_media=true
+            incremental_wp_uploads=true
+        fi
+    else
+        if [ -d "$dest_domain/public/media" ]; then
+            read -p "Incrementally rsync public/media (keep existing files)? (y/n): " media_confirm
+            if [ "$media_confirm" = "y" ] || [ "$media_confirm" = "Y" ]; then
+                incremental_media=true
+            fi
+        fi
+        if [ -d "$dest_domain/wp-content/uploads" ]; then
+            read -p "Incrementally rsync wp-content/uploads (keep existing files)? (y/n): " wp_media_confirm
+            if [ "$wp_media_confirm" = "y" ] || [ "$wp_media_confirm" = "Y" ]; then
+                incremental_wp_uploads=true
+            fi
+        fi
+    fi
+
+    if [ "$incremental_media" = true ]; then
+        excludes+=("--exclude=public/media/")
+    fi
+    if [ "$incremental_wp_uploads" = true ]; then
+        excludes+=("--exclude=wp-content/uploads/")
+    fi
+
+    # Create destination directory if it doesn't exist
+    if [ -d "$dest_domain" ]; then
+        # Check if destination directory contains any files
+        if [ "$(ls -A "$dest_domain")" ]; then
+            existing_count=$(find "$dest_domain" -type f | wc -l)
+            print_info "Destination directory already exists and contains $existing_count file(s)."
+            echo ""
+            print_info "You must delete existing content before copying new files."
+            if [ -n "$CFG_DELETE_EXISTING" ]; then
+                if is_true "$CFG_DELETE_EXISTING"; then
+                    delete_confirm="y"
+                else
+                    delete_confirm="n"
+                fi
+            else
+                read -p "Do you want to DELETE all existing files and proceed? (y/n): " delete_confirm
+            fi
+            
+            if [ "$delete_confirm" = "y" ] || [ "$delete_confirm" = "Y" ]; then
+                print_info "Deleting existing files in $dest_domain..."
+                if [ "$incremental_media" = true ] || [ "$incremental_wp_uploads" = true ]; then
+                    find "$dest_domain" -mindepth 1 \( -path "$dest_domain/public/media" -o -path "$dest_domain/wp-content/uploads" \) -prune -o -exec rm -rf {} +
+                    delete_status=$?
+                else
+                    empty_dir=$(mktemp -d)
+                    rsync -a --delete --info=progress2 "$empty_dir"/ "$dest_domain"/
+                    delete_status=$?
+                    rmdir "$empty_dir" 2>/dev/null
+                fi
+                if [ $delete_status -eq 0 ]; then
+                    print_success "Existing files deleted successfully."
+                else
+                    print_error "Failed to delete existing files!"
+                    exit 1
+                fi
+            else
+                print_info "Migration cancelled. Existing files were not modified."
+                exit 0
+            fi
+        else
+            print_info "Destination directory exists but is empty."
+        fi
+    else
+        mkdir -p "$dest_domain"
+        if [ $? -eq 0 ]; then
+            print_success "Created destination directory: $dest_domain"
+        else
+            print_error "Failed to create destination directory!"
+            exit 1
+        fi
+    fi
+
+    # Copy all files from source to destination with a progress bar
+    print_info "Copying files..."
+    rsync -a --info=progress2 "${excludes[@]}" "$source_domain"/ "$dest_domain"/
+    copy_status=$?
+
+    if [ $copy_status -eq 0 ] && [ "$incremental_media" = true ] && [ -d "$source_domain/public/media" ]; then
+        print_info "Incrementally syncing public/media..."
+        mkdir -p "$dest_domain/public/media"
+        rsync -a --info=progress2 "$source_domain/public/media/" "$dest_domain/public/media/"
+        copy_status=$?
+    fi
+    if [ $copy_status -eq 0 ] && [ "$incremental_wp_uploads" = true ] && [ -d "$source_domain/wp-content/uploads" ]; then
+        print_info "Incrementally syncing wp-content/uploads..."
+        mkdir -p "$dest_domain/wp-content/uploads"
+        rsync -a --info=progress2 "$source_domain/wp-content/uploads/" "$dest_domain/wp-content/uploads/"
+        copy_status=$?
+    fi
+
+    # Check if copy was successful
+    if [ $copy_status -eq 0 ]; then
+        # Count files copied
+        file_count=$(find "$dest_domain" -type f | wc -l)
+        print_success "File copy completed successfully!"
+        print_success "Total files copied: $file_count"
+        echo ""
+        print_info "Destination: $dest_domain"
+    else
+        print_error "Migration failed during file copy!"
+        exit 1
+    fi
+}
+
 # Load config if provided
 if [ -n "$CONFIG_FILE" ]; then
     load_config "$CONFIG_FILE"
@@ -670,16 +1288,29 @@ fi
 echo ""
 print_info "Starting migration..."
 
+# Detect CMS type
 cms_type=$(echo "${CFG_CMS:-}" | tr '[:upper:]' '[:lower:]')
 if [ -z "$cms_type" ]; then
     if [ -f "$source_domain/wp-config.php" ] && set_wp_cli_cmd "$source_domain"; then
         cms_type="wordpress"
+        print_info "Auto-detected CMS: WordPress"
     else
         cms_type="shopware"
+        print_info "Auto-detected CMS: Shopware"
     fi
+else
+    print_info "CMS type from config: $cms_type"
 fi
 
-# Database migration (optional)
+# Route to appropriate migration function
+if [ "$cms_type" = "wordpress" ]; then
+    migrate_wordpress
+else
+    migrate_shopware
+fi
+
+print_success "Migration completed!"
+
 env_file=""
 if [ "$cms_type" != "wordpress" ]; then
     if [ -f "$source_domain/.env.local" ]; then
@@ -1102,24 +1733,26 @@ if [ "$DB_ONLY" = false ]; then
         echo ""
         print_info "Destination: $dest_domain"
 
-        update_db_in_env "$dest_domain/.env.local"
-        update_db_in_env "$dest_domain/public/.env"
+        if [ "$cms_type" != "wordpress" ]; then
+            update_db_in_env "$dest_domain/.env.local"
+            update_db_in_env "$dest_domain/public/.env"
 
-        # Update domain references inside destination env files
-        if [ -n "$CFG_UPDATE_DOMAINS" ]; then
-            if is_true "$CFG_UPDATE_DOMAINS"; then
-                update_domain_confirm="y"
+            # Update domain references inside destination env files
+            if [ -n "$CFG_UPDATE_DOMAINS" ]; then
+                if is_true "$CFG_UPDATE_DOMAINS"; then
+                    update_domain_confirm="y"
+                else
+                    update_domain_confirm="n"
+                fi
             else
-                update_domain_confirm="n"
+                read -p "Update domain in $dest_domain/.env.local and $dest_domain/public/.env? (y/n): " update_domain_confirm
             fi
-        else
-            read -p "Update domain in $dest_domain/.env.local and $dest_domain/public/.env? (y/n): " update_domain_confirm
-        fi
-        if [ "$update_domain_confirm" = "y" ] || [ "$update_domain_confirm" = "Y" ]; then
-            update_domain_in_env "$dest_domain/.env.local"
-            update_domain_in_env "$dest_domain/public/.env"
-        else
-            print_info "Skipped updating domains in env files."
+            if [ "$update_domain_confirm" = "y" ] || [ "$update_domain_confirm" = "Y" ]; then
+                update_domain_in_env "$dest_domain/.env.local"
+                update_domain_in_env "$dest_domain/public/.env"
+            else
+                print_info "Skipped updating domains in env files."
+            fi
         fi
 
         wp_cli_available=false
@@ -1147,6 +1780,13 @@ if [ "$DB_ONLY" = false ]; then
                     update_wp_config_db "$dest_domain/wp-config.php" "$wp_db_host" "$wp_db_port" "$wp_db_name" "$wp_db_user" "$wp_db_pass"
                     if [ $? -ne 0 ]; then
                         print_error "Failed to update wp-config.php."
+                        exit 1
+                    fi
+
+                    print_info "Updating wp-config.php domain references..."
+                    update_wp_config_domain "$dest_domain/wp-config.php" "$source_domain" "$dest_domain"
+                    if [ $? -ne 0 ]; then
+                        print_error "Failed to update wp-config.php domain references."
                         exit 1
                     fi
 
