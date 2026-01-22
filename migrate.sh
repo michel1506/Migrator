@@ -70,6 +70,17 @@ ensure_python_available() {
     fi
 }
 
+install_python_package() {
+    local package="$1"
+    ensure_python_available
+    print_info "Installing Python package: $package"
+    "$PYTHON_BIN" -m pip install "$package"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to install $package."
+        exit 1
+    fi
+}
+
 ensure_yaml_available() {
     ensure_python_available
 
@@ -77,9 +88,7 @@ ensure_yaml_available() {
 import yaml
 PY
     then
-        print_error "PyYAML is required to read YAML config files."
-        print_info "Install it with: pip install pyyaml"
-        exit 1
+        install_python_package "pyyaml"
     fi
 }
 
@@ -237,9 +246,7 @@ ensure_pymysql_available() {
 import pymysql
 PY
     then
-        print_error "PyMySQL is required for software DB migration."
-        print_info "Install it with: pip install pymysql"
-        exit 1
+        install_python_package "pymysql"
     fi
 }
 
