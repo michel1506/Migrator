@@ -126,6 +126,7 @@ with open(sys.argv[1], 'r', encoding='utf-8') as f:
 emit('CFG_SOURCE_DOMAIN', get_path(data, ['source_domain']))
 emit('CFG_DEST_DOMAIN', get_path(data, ['dest_domain']))
 emit('CFG_PROCEED', get_path(data, ['proceed']))
+emit('CFG_CMS', get_path(data, ['cms']))
 
 emit('CFG_DB_MIGRATE', get_path(data, ['db', 'migrate']))
 emit('CFG_DB_METHOD', get_path(data, ['db', 'method']))
@@ -669,15 +670,26 @@ fi
 echo ""
 print_info "Starting migration..."
 
-# Database migration (optional)
-env_file=""
-if [ -f "$source_domain/.env.local" ]; then
-    env_file="$source_domain/.env.local"
-elif [ -f "$source_domain/.env" ]; then
-    env_file="$source_domain/.env"
+cms_type=$(echo "${CFG_CMS:-}" | tr '[:upper:]' '[:lower:]')
+if [ -z "$cms_type" ]; then
+    if [ -f "$source_domain/wp-config.php" ] && set_wp_cli_cmd "$source_domain"; then
+        cms_type="wordpress"
+    else
+        cms_type="shopware"
+    fi
 fi
 
-if [ -n "$env_file" ]; then
+# Database migration (optional)
+env_file=""
+if [ "$cms_type" != "wordpress" ]; then
+    if [ -f "$source_domain/.env.local" ]; then
+        env_file="$source_domain/.env.local"
+    elif [ -f "$source_domain/.env" ]; then
+        env_file="$source_domain/.env"
+    fi
+fi
+
+if [ -n "$env_file" ] && [ "$cms_type" != "wordpress" ]; then
     echo ""
     if [ -n "$CFG_DB_MIGRATE" ]; then
         if is_true "$CFG_DB_MIGRATE"; then
@@ -830,7 +842,7 @@ if [ -n "$env_file" ]; then
             exit 1
         fi
     fi
-else
+elif [ "$cms_type" != "wordpress" ]; then
     echo ""
     print_info "No .env file found in source directory."
     if [ -n "$CFG_DB_MIGRATE" ]; then

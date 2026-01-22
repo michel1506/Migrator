@@ -31,6 +31,7 @@ Copy `migrate.config.example.yaml`, adjust values, then run with `--config`. Any
 source_domain: "example.com"
 dest_domain: "staging.example.com"
 proceed: true
+cms: "shopware"
 
 db:
   migrate: true

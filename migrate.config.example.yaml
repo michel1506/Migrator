@@ -5,6 +5,7 @@
 source_domain: "example.com"
 dest_domain: "staging.example.com"
 proceed: true
+cms: "shopware"
 
 # Database migration settings
 # If db.migrate is false, database migration is skipped.

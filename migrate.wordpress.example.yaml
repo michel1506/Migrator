@@ -4,6 +4,7 @@
 source_domain: "example.com"
 dest_domain: "staging.example.com"
 proceed: true
+cms: "wordpress"
 
 file_copy:
   delete_existing: true
