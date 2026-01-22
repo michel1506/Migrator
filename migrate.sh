@@ -1311,16 +1311,6 @@ fi
 
 print_success "Migration completed!"
 
-env_file=""
-if [ "$cms_type" != "wordpress" ]; then
-    if [ -f "$source_domain/.env.local" ]; then
-        env_file="$source_domain/.env.local"
-    elif [ -f "$source_domain/.env" ]; then
-        env_file="$source_domain/.env"
-    fi
-fi
-
-if [ -n "$env_file" ] && [ "$cms_type" != "wordpress" ]; then
     echo ""
     if [ -n "$CFG_DB_MIGRATE" ]; then
         if is_true "$CFG_DB_MIGRATE"; then
