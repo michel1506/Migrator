@@ -1108,6 +1108,27 @@ migrate_shopware() {
         else
             print_info "Skipped updating domains in env files."
         fi
+        
+        # Clear and warmup Shopware cache
+        if [ -x "$dest_domain/bin/console" ]; then
+            print_info "Clearing Shopware cache..."
+            (cd "$dest_domain" && bin/console cache:clear)
+            if [ $? -eq 0 ]; then
+                print_success "Cache cleared successfully."
+            else
+                print_error "Failed to clear cache."
+            fi
+            
+            print_info "Warming up Shopware cache..."
+            (cd "$dest_domain" && bin/console cache:warmup)
+            if [ $? -eq 0 ]; then
+                print_success "Cache warmed up successfully."
+            else
+                print_error "Failed to warm up cache."
+            fi
+        else
+            print_info "bin/console not found or not executable in $dest_domain, skipping cache operations."
+        fi
     fi
 }
 

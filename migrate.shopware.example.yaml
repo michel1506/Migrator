@@ -31,7 +31,7 @@ db:
 file_copy:
   delete_existing: false
   # Comma-separated paths to exclude from copy
-  exclude_paths: "var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media,wp-content/cache,wp-content/w3tc-cache,wp-content/wp-rocket-cache,wp-content/litespeed,wp-content/debug.log,wp-content/*.log,wp-content/backup,*.zip,*.tar.gz"
+  exclude_paths: "var/cache,var/log,var/sessions,public/var/cache,public/media,*.zip,*.tar.gz"
   # If true and dest already has public/media, keep it and rsync incrementally
   incremental_media: true
 
