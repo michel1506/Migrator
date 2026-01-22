@@ -1203,7 +1203,7 @@ copy_files_common() {
             if [ "$delete_confirm" = "y" ] || [ "$delete_confirm" = "Y" ]; then
                 print_info "Deleting existing files in $dest_domain..."
                 if [ "$incremental_media" = true ] || [ "$incremental_wp_uploads" = true ]; then
-                    find "$dest_domain" -mindepth 1 \( -path "$dest_domain/public/media" -o -path "$dest_domain/wp-content/uploads" \) -prune -o -exec rm -rf {} +
+                    find "$dest_domain" -mindepth 1 \( -path "$dest_domain/public/media" -o -path "$dest_domain/wp-content/uploads" \) -prune -o -exec rm -rf {} + 2>/dev/null
                     delete_status=$?
                 else
                     empty_dir=$(mktemp -d)
