@@ -296,6 +296,37 @@ update_wp_config_db() {
     sed -i "s|define( *'DB_HOST'.*|define('DB_HOST', '${esc_host}');|" "$file"
 }
 
+get_wp_config_define() {
+    local file="$1" key="$2"
+    if [ ! -f "$file" ]; then
+        return 1
+    fi
+    grep -E "define\(\s*['\"]${key}['\"]" "$file" | head -n 1 \
+        | sed -E "s/.*define\(\s*['\"]${key}['\"]\s*,\s*['\"]([^'\"]*)['\"].*/\1/"
+}
+
+read_wp_config_db() {
+    local file="$1"
+    WP_SRC_DB_NAME=$(get_wp_config_define "$file" "DB_NAME")
+    WP_SRC_DB_USER=$(get_wp_config_define "$file" "DB_USER")
+    WP_SRC_DB_PASS=$(get_wp_config_define "$file" "DB_PASSWORD")
+    WP_SRC_DB_HOST_RAW=$(get_wp_config_define "$file" "DB_HOST")
+
+    if [ -z "$WP_SRC_DB_NAME" ] || [ -z "$WP_SRC_DB_USER" ] || [ -z "$WP_SRC_DB_HOST_RAW" ]; then
+        return 1
+    fi
+
+    if echo "$WP_SRC_DB_HOST_RAW" | grep -q ':'; then
+        WP_SRC_DB_HOST="${WP_SRC_DB_HOST_RAW%%:*}"
+        WP_SRC_DB_PORT="${WP_SRC_DB_HOST_RAW##*:}"
+    else
+        WP_SRC_DB_HOST="$WP_SRC_DB_HOST_RAW"
+        WP_SRC_DB_PORT="3306"
+    fi
+
+    return 0
+}
+
 run_wp_cli() {
     local path="$1" url="$2"
     shift 2
@@ -1081,6 +1112,12 @@ if [ "$DB_ONLY" = false ]; then
             if [ -n "$CFG_DB_DEST_HOST" ] && [ -n "$CFG_DB_DEST_NAME" ] && [ -n "$CFG_DB_DEST_USER" ]; then
                 read -p "WordPress detected (wp-cli). Migrate WordPress site using wp-cli? (y/n): " wp_confirm
                 if [ "$wp_confirm" = "y" ] || [ "$wp_confirm" = "Y" ]; then
+                    if ! read_wp_config_db "$source_domain/wp-config.php"; then
+                        print_error "Failed to read source DB details from $source_domain/wp-config.php."
+                        exit 1
+                    fi
+                    print_info "Source WordPress DB: ${WP_SRC_DB_NAME} @ ${WP_SRC_DB_HOST}:${WP_SRC_DB_PORT} (user: ${WP_SRC_DB_USER})"
+
                     wp_db_host="$CFG_DB_DEST_HOST"
                     wp_db_port="${CFG_DB_DEST_PORT:-3306}"
                     wp_db_name="$CFG_DB_DEST_NAME"
