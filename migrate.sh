@@ -1335,8 +1335,6 @@ fi
 
 print_success "Migration completed!"
 
-    echo ""
-    if [ -n "$CFG_DB_MIGRATE" ]; then
         if is_true "$CFG_DB_MIGRATE"; then
             db_confirm="y"
         else
