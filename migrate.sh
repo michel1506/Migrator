@@ -261,6 +261,14 @@ ensure_php_available() {
 
 set_wp_cli_cmd() {
     local base="$1"
+    
+    # First check for global wp-cli installation
+    if command -v wp >/dev/null 2>&1; then
+        WP_CLI_CMD=("wp")
+        return 0
+    fi
+    
+    # Check for wp-cli in the specific directory
     if [ -x "$base/wp" ]; then
         WP_CLI_CMD=("$base/wp")
         return 0
@@ -274,6 +282,7 @@ set_wp_cli_cmd() {
         WP_CLI_CMD=("php" "$base/wp-cli.phar")
         return 0
     fi
+    
     return 1
 }
 
