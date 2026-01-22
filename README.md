@@ -52,7 +52,7 @@ db:
 
 file_copy:
   delete_existing: false
-  exclude_paths: "var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media"
+  exclude_paths: "var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media,wp-content/cache,wp-content/w3tc-cache,wp-content/wp-rocket-cache,wp-content/litespeed,wp-content/debug.log,wp-content/*.log,wp-content/backup,*.zip,*.tar.gz"
   incremental_media: true
 
 env_update:

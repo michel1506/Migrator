@@ -928,7 +928,7 @@ if [ "$DB_ONLY" = false ]; then
     if [ -n "$CFG_COPY_EXCLUDE_PATHS" ]; then
         exclude_input="$CFG_COPY_EXCLUDE_PATHS"
     else
-        read -p "Enter comma-separated paths to exclude (e.g., var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media) or leave empty: " exclude_input
+        read -p "Enter comma-separated paths to exclude (e.g., var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media,wp-content/cache,wp-content/w3tc-cache,wp-content/wp-rocket-cache,wp-content/litespeed,wp-content/debug.log,wp-content/*.log,wp-content/backup,*.zip,*.tar.gz) or leave empty: " exclude_input
     fi
     if [ -n "$exclude_input" ]; then
         IFS=',' read -ra raw_excludes <<< "$exclude_input"
@@ -941,9 +941,11 @@ if [ "$DB_ONLY" = false ]; then
     fi
 
     incremental_media=false
+    incremental_wp_uploads=false
     if [ -n "$CFG_INCREMENTAL_MEDIA" ]; then
         if is_true "$CFG_INCREMENTAL_MEDIA"; then
             incremental_media=true
+            incremental_wp_uploads=true
         fi
     else
         if [ -d "$dest_domain/public/media" ]; then
@@ -952,10 +954,19 @@ if [ "$DB_ONLY" = false ]; then
                 incremental_media=true
             fi
         fi
+        if [ -d "$dest_domain/wp-content/uploads" ]; then
+            read -p "Incrementally rsync wp-content/uploads (keep existing files)? (y/n): " wp_media_confirm
+            if [ "$wp_media_confirm" = "y" ] || [ "$wp_media_confirm" = "Y" ]; then
+                incremental_wp_uploads=true
+            fi
+        fi
     fi
 
     if [ "$incremental_media" = true ]; then
         excludes+=("--exclude=public/media/")
+    fi
+    if [ "$incremental_wp_uploads" = true ]; then
+        excludes+=("--exclude=wp-content/uploads/")
     fi
 
     # Create destination directory if it doesn't exist
@@ -978,8 +989,8 @@ if [ "$DB_ONLY" = false ]; then
             
             if [ "$delete_confirm" = "y" ] || [ "$delete_confirm" = "Y" ]; then
                 print_info "Deleting existing files in $dest_domain..."
-                if [ "$incremental_media" = true ]; then
-                    find "$dest_domain" -mindepth 1 -path "$dest_domain/public/media" -prune -o -exec rm -rf {} +
+                if [ "$incremental_media" = true ] || [ "$incremental_wp_uploads" = true ]; then
+                    find "$dest_domain" -mindepth 1 \( -path "$dest_domain/public/media" -o -path "$dest_domain/wp-content/uploads" \) -prune -o -exec rm -rf {} +
                     delete_status=$?
                 else
                     empty_dir=$(mktemp -d)
@@ -1019,6 +1030,12 @@ if [ "$DB_ONLY" = false ]; then
         print_info "Incrementally syncing public/media..."
         mkdir -p "$dest_domain/public/media"
         rsync -a --info=progress2 "$source_domain/public/media/" "$dest_domain/public/media/"
+        copy_status=$?
+    fi
+    if [ $copy_status -eq 0 ] && [ "$incremental_wp_uploads" = true ] && [ -d "$source_domain/wp-content/uploads" ]; then
+        print_info "Incrementally syncing wp-content/uploads..."
+        mkdir -p "$dest_domain/wp-content/uploads"
+        rsync -a --info=progress2 "$source_domain/wp-content/uploads/" "$dest_domain/wp-content/uploads/"
         copy_status=$?
     fi
 
