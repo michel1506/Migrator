@@ -359,7 +359,13 @@ run_wp_migration() {
     local src="$1" dst="$2" tmp_sql
     tmp_sql=$(mktemp)
 
-    print_info "Exporting WordPress database using wp-cli..."
+    # Export from source using source wp-cli
+    print_info "Exporting WordPress database from source using wp-cli..."
+    if ! set_wp_cli_cmd "$src"; then
+        print_error "wp-cli not found in source directory $src"
+        rm -f "$tmp_sql"
+        return 1
+    fi
     run_wp_cli "$src" "$source_domain" db export "$tmp_sql"
     if [ $? -ne 0 ]; then
         print_error "wp-cli export failed."
@@ -367,7 +373,13 @@ run_wp_migration() {
         return 1
     fi
 
+    # Import to destination using destination wp-cli
     print_info "Importing WordPress database into destination using wp-cli..."
+    if ! set_wp_cli_cmd "$dst"; then
+        print_error "wp-cli not found in destination directory $dst"
+        rm -f "$tmp_sql"
+        return 1
+    fi
     run_wp_cli "$dst" "$dest_domain" db import "$tmp_sql"
     if [ $? -ne 0 ]; then
         print_error "wp-cli import failed."
@@ -377,6 +389,7 @@ run_wp_migration() {
 
     rm -f "$tmp_sql"
 
+    # Search-replace using destination wp-cli (already set above)
     print_info "Updating WordPress URLs using wp-cli search-replace..."
     run_wp_cli "$dst" "$dest_domain" search-replace "$source_domain" "$dest_domain" --skip-columns=guid --all-tables
     if [ $? -ne 0 ]; then
@@ -737,7 +750,8 @@ migrate_wordpress() {
     # Database migration via wp-cli
     if [ "$db_migrate_confirm" = "y" ] || [ "$db_migrate_confirm" = "Y" ]; then
         wp_cli_available=false
-        if set_wp_cli_cmd "$source_domain"; then
+        # Check for wp-cli in destination directory (after files are copied)
+        if set_wp_cli_cmd "$dest_domain"; then
             wp_cli_available=true
         fi
 
@@ -751,7 +765,8 @@ migrate_wordpress() {
                 exit 1
             fi
         else
-            print_error "wp-cli not found. Cannot perform WordPress database migration."
+            print_error "wp-cli not found in $dest_domain. Cannot perform WordPress database migration."
+            print_info "Make sure wp-cli (wp or wp-cli.phar) exists in the destination directory."
             exit 1
         fi
     fi
