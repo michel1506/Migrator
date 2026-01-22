@@ -243,6 +243,97 @@ PY
     fi
 }
 
+ensure_php_available() {
+    if ! command -v php >/dev/null 2>&1; then
+        print_error "PHP is required to run wp-cli.phar."
+        exit 1
+    fi
+}
+
+set_wp_cli_cmd() {
+    local base="$1"
+    if [ -x "$base/wp" ]; then
+        WP_CLI_CMD=("$base/wp")
+        return 0
+    fi
+    if [ -x "$base/vendor/bin/wp" ]; then
+        WP_CLI_CMD=("$base/vendor/bin/wp")
+        return 0
+    fi
+    if [ -f "$base/wp-cli.phar" ]; then
+        ensure_php_available
+        WP_CLI_CMD=("php" "$base/wp-cli.phar")
+        return 0
+    fi
+    return 1
+}
+
+escape_sed() {
+    echo "$1" | sed -e 's/[\/&|]/\\&/g'
+}
+
+update_wp_config_db() {
+    local file="$1" host="$2" port="$3" name="$4" user="$5" pass="$6"
+    if [ ! -f "$file" ]; then
+        print_error "wp-config.php not found at $file"
+        return 1
+    fi
+
+    local host_value="$host"
+    if [ -n "$port" ] && [ "$port" != "3306" ]; then
+        host_value="${host}:${port}"
+    fi
+
+    local esc_name esc_user esc_pass esc_host
+    esc_name=$(escape_sed "$name")
+    esc_user=$(escape_sed "$user")
+    esc_pass=$(escape_sed "$pass")
+    esc_host=$(escape_sed "$host_value")
+
+    sed -i "s|define( *'DB_NAME'.*|define('DB_NAME', '${esc_name}');|" "$file"
+    sed -i "s|define( *'DB_USER'.*|define('DB_USER', '${esc_user}');|" "$file"
+    sed -i "s|define( *'DB_PASSWORD'.*|define('DB_PASSWORD', '${esc_pass}');|" "$file"
+    sed -i "s|define( *'DB_HOST'.*|define('DB_HOST', '${esc_host}');|" "$file"
+}
+
+run_wp_cli() {
+    local path="$1"
+    shift
+    "${WP_CLI_CMD[@]}" --path="$path" "$@"
+}
+
+run_wp_migration() {
+    local src="$1" dst="$2" tmp_sql
+    tmp_sql=$(mktemp)
+
+    print_info "Exporting WordPress database using wp-cli..."
+    run_wp_cli "$src" db export "$tmp_sql"
+    if [ $? -ne 0 ]; then
+        print_error "wp-cli export failed."
+        rm -f "$tmp_sql"
+        return 1
+    fi
+
+    print_info "Importing WordPress database into destination using wp-cli..."
+    run_wp_cli "$dst" db import "$tmp_sql"
+    if [ $? -ne 0 ]; then
+        print_error "wp-cli import failed."
+        rm -f "$tmp_sql"
+        return 1
+    fi
+
+    rm -f "$tmp_sql"
+
+    print_info "Updating WordPress URLs using wp-cli search-replace..."
+    run_wp_cli "$dst" search-replace "$source_domain" "$dest_domain" --skip-columns=guid --all-tables
+    if [ $? -ne 0 ]; then
+        print_error "wp-cli search-replace failed."
+        return 1
+    fi
+
+    return 0
+}
+
 run_mysqldump_to_mysql() {
     local src_host="$1" src_port="$2" src_user="$3" src_pass="$4" src_db="$5"
     local dst_host="$6" dst_port="$7" dst_user="$8" dst_pass="$9" dst_db="${10}"
@@ -300,7 +391,8 @@ def connect(conf, server_side=False):
     )
 
 try:
-    src_conn = connect(src, server_side=True)
+    meta_conn = connect(src, server_side=False)
+    data_conn = connect(src, server_side=True)
     dst_conn = connect(dst, server_side=False)
 
     with dst_conn.cursor() as dst_cur:
@@ -323,7 +415,7 @@ try:
         sys.stdout.write("\r" + line)
         sys.stdout.flush()
 
-    with src_conn.cursor() as meta_cur, dst_conn.cursor() as dst_cur:
+    with meta_conn.cursor() as meta_cur, dst_conn.cursor() as dst_cur:
         meta_cur.execute(
             "SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type='BASE TABLE'",
             (src["database"],),
@@ -341,7 +433,7 @@ try:
             dst_cur.execute(create_sql)
             dst_conn.commit()
 
-            with src_conn.cursor() as data_cur:
+            with data_conn.cursor() as data_cur:
                 data_cur.execute(f"SELECT * FROM `{table}`")
                 columns = [desc[0] for desc in data_cur.description]
                 if not columns:
@@ -366,7 +458,8 @@ try:
         dst_cur.execute("SET FOREIGN_KEY_CHECKS=1;")
         dst_conn.commit()
 
-    src_conn.close()
+    meta_conn.close()
+    data_conn.close()
     dst_conn.close()
 except Exception as exc:
     print(exc)
@@ -885,14 +978,15 @@ if [ "$DB_ONLY" = false ]; then
             
             if [ "$delete_confirm" = "y" ] || [ "$delete_confirm" = "Y" ]; then
                 print_info "Deleting existing files in $dest_domain..."
-                empty_dir=$(mktemp -d)
                 if [ "$incremental_media" = true ]; then
-                    rsync -a --delete --info=progress2 --exclude="public/media/" "$empty_dir"/ "$dest_domain"/
+                    find "$dest_domain" -mindepth 1 -path "$dest_domain/public/media" -prune -o -exec rm -rf {} +
+                    delete_status=$?
                 else
+                    empty_dir=$(mktemp -d)
                     rsync -a --delete --info=progress2 "$empty_dir"/ "$dest_domain"/
+                    delete_status=$?
+                    rmdir "$empty_dir" 2>/dev/null
                 fi
-                delete_status=$?
-                rmdir "$empty_dir" 2>/dev/null
                 if [ $delete_status -eq 0 ]; then
                     print_success "Existing files deleted successfully."
                 else
@@ -955,6 +1049,42 @@ if [ "$DB_ONLY" = false ]; then
             update_domain_in_env "$dest_domain/public/.env"
         else
             print_info "Skipped updating domains in env files."
+        fi
+
+        wp_cli_available=false
+        if set_wp_cli_cmd "$source_domain"; then
+            wp_cli_available=true
+        fi
+
+        if [ "$wp_cli_available" = true ]; then
+            if [ -n "$CFG_DB_DEST_HOST" ] && [ -n "$CFG_DB_DEST_NAME" ] && [ -n "$CFG_DB_DEST_USER" ]; then
+                read -p "WordPress detected (wp-cli). Migrate WordPress site using wp-cli? (y/n): " wp_confirm
+                if [ "$wp_confirm" = "y" ] || [ "$wp_confirm" = "Y" ]; then
+                    wp_db_host="$CFG_DB_DEST_HOST"
+                    wp_db_port="${CFG_DB_DEST_PORT:-3306}"
+                    wp_db_name="$CFG_DB_DEST_NAME"
+                    wp_db_user="$CFG_DB_DEST_USER"
+                    wp_db_pass="$CFG_DB_DEST_PASS"
+
+                    print_info "Updating wp-config.php with destination database credentials..."
+                    update_wp_config_db "$dest_domain/wp-config.php" "$wp_db_host" "$wp_db_port" "$wp_db_name" "$wp_db_user" "$wp_db_pass"
+                    if [ $? -ne 0 ]; then
+                        print_error "Failed to update wp-config.php."
+                        exit 1
+                    fi
+
+                    print_info "Running WordPress migration via wp-cli..."
+                    run_wp_migration "$source_domain" "$dest_domain"
+                    if [ $? -eq 0 ]; then
+                        print_success "WordPress migration completed successfully."
+                    else
+                        print_error "WordPress migration failed."
+                        exit 1
+                    fi
+                fi
+            else
+                print_info "WordPress detected but destination DB credentials are missing in YAML config. Skipping WordPress migration."
+            fi
         fi
     else
         print_error "Migration failed during file copy!"

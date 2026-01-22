@@ -1,5 +1,4 @@
-# Renamed to migrate.shopware.example.yaml
-# Example configuration for migrate.sh (Shopware)
+# Example configuration for migrate.sh with WordPress migration
 # Copy this file and adjust values as needed.
 
 source_domain: "example.com"
@@ -21,6 +20,7 @@ db:
     name: "source_db"
     user: "source_user"
     password: "source_password"
+  # Destination DB credentials are REQUIRED for WordPress migration
   dest:
     host: "localhost"
     port: 3306
@@ -29,9 +29,9 @@ db:
     password: "dest_password"
 
 file_copy:
-  delete_existing: false
+  delete_existing: true
   # Comma-separated paths to exclude from copy
-  exclude_paths: "var/cache,var/log,var/sessions,public/var/cache,node_modules,var/theme,public/theme,public/media"
+  exclude_paths: "var/cache,var/log,var/sessions,public/var/cache,node_modules,public/media"
   # If true and dest already has public/media, keep it and rsync incrementally
   incremental_media: true
 

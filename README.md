@@ -28,8 +28,8 @@ Migrate a domain folder and optionally its MySQL database using `migrate.sh`.
 Copy `migrate.config.example.yaml`, adjust values, then run with `--config`. Any missing values still prompt interactively. Set `db.method` to `python` (software migration) or `mysql` (mysqldump|mysql). Set `db.source_from_env` to choose whether the source DB is read from the source domain env file. Set `db.update_sales_channel_url` to update `sales_channel_domain.url` after migration. The destination database is always cleared before import.
 
 ```yaml
-source_domain: "tt-gmbh.de"
-dest_domain: "test.tt-gmbh.de"
+source_domain: "example.com"
+dest_domain: "staging.example.com"
 proceed: true
 
 db:
