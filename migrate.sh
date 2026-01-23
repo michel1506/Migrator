@@ -263,6 +263,35 @@ PY
     fi
 }
 
+delete_dest_contents() {
+    local dest="$1"
+    local keep_media="$2"
+    local keep_wp_uploads="$3"
+    local delete_status=0
+
+    if [ "$keep_media" = true ] || [ "$keep_wp_uploads" = true ]; then
+        find "$dest" -mindepth 1 \( -path "$dest/public/media" -o -path "$dest/wp-content/uploads" \) -prune -o -exec rm -rf {} + 2>/dev/null
+        delete_status=$?
+    else
+        if command -v rsync >/dev/null 2>&1; then
+            empty_dir=$(mktemp -d)
+            rsync -a --delete --force --ignore-errors --info=progress2 "$empty_dir"/ "$dest"/
+            delete_status=$?
+            rmdir "$empty_dir" 2>/dev/null
+        else
+            delete_status=1
+        fi
+
+        if [ $delete_status -ne 0 ]; then
+            print_info "Retrying delete with rm -rf..."
+            find "$dest" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+            delete_status=$?
+        fi
+    fi
+
+    return $delete_status
+}
+
 ensure_php_available() {
     if ! command -v php >/dev/null 2>&1; then
         print_error "PHP is required to run wp-cli.phar."
@@ -1112,9 +1141,13 @@ migrate_shopware() {
     if [ "$DB_ONLY" = false ]; then
         copy_files_common
 
-        # Update .env files
-        update_db_in_env "$dest_domain/.env.local"
-        update_db_in_env "$dest_domain/public/.env"
+        # Update .env files (only if database was migrated)
+        if [ "$db_migrated" = true ]; then
+            update_db_in_env "$dest_domain/.env.local"
+            update_db_in_env "$dest_domain/public/.env"
+        else
+            print_info "Skipping DB env update (database was not migrated)."
+        fi
 
         # Update domain references inside destination env files
         if [ -n "$CFG_UPDATE_DOMAINS" ]; then
@@ -1230,15 +1263,8 @@ copy_files_common() {
             
             if [ "$delete_confirm" = "y" ] || [ "$delete_confirm" = "Y" ]; then
                 print_info "Deleting existing files in $dest_domain..."
-                if [ "$incremental_media" = true ] || [ "$incremental_wp_uploads" = true ]; then
-                    find "$dest_domain" -mindepth 1 \( -path "$dest_domain/public/media" -o -path "$dest_domain/wp-content/uploads" \) -prune -o -exec rm -rf {} + 2>/dev/null
-                    delete_status=$?
-                else
-                    empty_dir=$(mktemp -d)
-                    rsync -a --delete --info=progress2 "$empty_dir"/ "$dest_domain"/
-                    delete_status=$?
-                    rmdir "$empty_dir" 2>/dev/null
-                fi
+                delete_dest_contents "$dest_domain" "$incremental_media" "$incremental_wp_uploads"
+                delete_status=$?
                 if [ $delete_status -eq 0 ]; then
                     print_success "Existing files deleted successfully."
                 else
