@@ -267,29 +267,49 @@ delete_dest_contents() {
     local dest="$1"
     local keep_media="$2"
     local keep_wp_uploads="$3"
-    local delete_status=0
+    local delete_status=1
+    local attempts=0
 
-    if [ "$keep_media" = true ] || [ "$keep_wp_uploads" = true ]; then
-        find "$dest" -mindepth 1 \( -path "$dest/public/media" -o -path "$dest/wp-content/uploads" \) -prune -o -exec rm -rf {} + 2>/dev/null
-        delete_status=$?
-    else
-        if command -v rsync >/dev/null 2>&1; then
-            empty_dir=$(mktemp -d)
-            rsync -a --delete --force --ignore-errors --info=progress2 "$empty_dir"/ "$dest"/
+    while [ $attempts -lt 3 ]; do
+        if [ "$keep_media" = true ] || [ "$keep_wp_uploads" = true ]; then
+            find "$dest" \
+                \( -path "$dest/public/media" -o -path "$dest/public/media/*" -o -path "$dest/wp-content/uploads" -o -path "$dest/wp-content/uploads/*" \) -prune \
+                -o -mindepth 1 -exec rm -rf {} + 2>/dev/null
             delete_status=$?
-            rmdir "$empty_dir" 2>/dev/null
         else
-            delete_status=1
+            if command -v rsync >/dev/null 2>&1; then
+                empty_dir=$(mktemp -d)
+                rsync -a --delete --force --ignore-errors --info=progress2 "$empty_dir"/ "$dest"/
+                delete_status=$?
+                rmdir "$empty_dir" 2>/dev/null
+            else
+                delete_status=1
+            fi
+
+            if [ $delete_status -ne 0 ]; then
+                print_info "Retrying delete with rm -rf..."
+                find "$dest" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+                delete_status=$?
+            fi
         fi
 
-        if [ $delete_status -ne 0 ]; then
-            print_info "Retrying delete with rm -rf..."
-            find "$dest" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
-            delete_status=$?
+        if [ "$keep_media" = true ] || [ "$keep_wp_uploads" = true ]; then
+            remaining_count=$(find "$dest" \
+                \( -path "$dest/public/media" -o -path "$dest/public/media/*" -o -path "$dest/wp-content/uploads" -o -path "$dest/wp-content/uploads/*" \) -prune \
+                -o -type f -print | wc -l)
+        else
+            remaining_count=$(find "$dest" -type f | wc -l)
         fi
-    fi
 
-    return $delete_status
+        if [ "$remaining_count" -eq 0 ]; then
+            return 0
+        fi
+
+        attempts=$((attempts + 1))
+        print_info "Delete retry $attempts/3 (remaining files: $remaining_count)..."
+    done
+
+    return 1
 }
 
 ensure_php_available() {
@@ -644,6 +664,10 @@ update_domain_in_env() {
 update_db_in_env() {
     local file="$1"
     if [ -f "$file" ]; then
+        if [ -z "$dest_db_host" ] || [ -z "$dest_db_port" ] || [ -z "$dest_db_name" ] || [ -z "$dest_db_user" ]; then
+            print_info "Skipping DB env update in $(basename "$file") (missing destination DB settings)."
+            return 0
+        fi
         print_info "Updating database credentials in $file..."
         if [ -n "$dest_db_pass" ]; then
             dest_db_creds="${dest_db_user}:${dest_db_pass}"
@@ -1001,6 +1025,13 @@ migrate_shopware() {
                 print_error "Database migration failed."
                 exit 1
             fi
+        else
+            # DB migration disabled: still read destination DB settings from config for env update
+            dest_db_name=${CFG_DB_DEST_NAME:-$dest_db_name}
+            dest_db_host=${CFG_DB_DEST_HOST:-$dest_db_host}
+            dest_db_port=${CFG_DB_DEST_PORT:-$dest_db_port}
+            dest_db_user=${CFG_DB_DEST_USER:-$dest_db_user}
+            dest_db_pass=${CFG_DB_DEST_PASS:-$dest_db_pass}
         fi
     else
         echo ""
@@ -1141,8 +1172,8 @@ migrate_shopware() {
     if [ "$DB_ONLY" = false ]; then
         copy_files_common
 
-        # Update .env files (only if database was migrated)
-        if [ "$db_migrated" = true ]; then
+        # Update .env files (if DB was migrated or destination DB settings are provided)
+        if [ "$db_migrated" = true ] || [ -n "$dest_db_name" ] || [ -n "$dest_db_user" ]; then
             update_db_in_env "$dest_domain/.env.local"
             update_db_in_env "$dest_domain/public/.env"
         else
