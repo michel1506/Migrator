@@ -29,6 +29,7 @@ show_help() {
 }
 
 DB_ONLY=false
+DB_MIGRATE=false
 CONFIG_FILE=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -204,6 +205,11 @@ clear_database() {
     local pass="$4"
     local name="$5"
 
+    if [ "$DB_MIGRATE" != true ]; then
+        print_info "Database migration disabled. Skipping destination database clear."
+        return 0
+    fi
+
     print_info "Clearing destination database '$name'..."
     drop_sql=$(mysql -h "${host:-localhost}" -P "$port" -u "$user" -p"$pass" -N -e "SELECT CONCAT('DROP TABLE IF EXISTS \`', table_name, '\`;') FROM information_schema.tables WHERE table_schema='${name}' AND table_type IN ('BASE TABLE','VIEW');")
     if [ $? -ne 0 ]; then
@@ -229,6 +235,11 @@ ensure_destination_db() {
     local user="$3"
     local pass="$4"
     local name="$5"
+
+    if [ "$DB_MIGRATE" != true ]; then
+        print_info "Database migration disabled. Destination database will not be modified."
+        return 0
+    fi
 
     if db_exists "$host" "$port" "$user" "$pass" "$name"; then
         clear_database "$host" "$port" "$user" "$pass" "$name"
@@ -431,6 +442,11 @@ run_mysqldump_to_mysql() {
 run_python_migration() {
     local src_host="$1" src_port="$2" src_user="$3" src_pass="$4" src_db="$5"
     local dst_host="$6" dst_port="$7" dst_user="$8" dst_pass="$9" dst_db="${10}"
+
+    if [ "$DB_MIGRATE" != true ]; then
+        print_info "Database migration disabled. Skipping python migration."
+        return 0
+    fi
 
     ensure_pymysql_available
 
@@ -653,6 +669,7 @@ migrate_wordpress() {
     fi
 
     if [ "$db_migrate_confirm" = "y" ] || [ "$db_migrate_confirm" = "Y" ]; then
+        DB_MIGRATE=true
         # Source database settings
         use_wp_config_source=false
         if [ -n "$CFG_DB_SOURCE_FROM_WP_CONFIG" ]; then
@@ -813,6 +830,7 @@ migrate_shopware() {
             read -p "Do you want to migrate the database using $env_file? (y/n): " db_confirm
         fi
         if [ "$db_confirm" = "y" ] || [ "$db_confirm" = "Y" ]; then
+            DB_MIGRATE=true
             use_env_source=false
             if [ -n "$CFG_DB_SOURCE_FROM_ENV" ]; then
                 if is_true "$CFG_DB_SOURCE_FROM_ENV"; then
@@ -968,6 +986,7 @@ migrate_shopware() {
             read -p "Do you want to enter database details manually? (y/n): " manual_db_confirm
         fi
         if [ "$manual_db_confirm" = "y" ] || [ "$manual_db_confirm" = "Y" ]; then
+            DB_MIGRATE=true
             db_host=${CFG_DB_SOURCE_HOST:-$db_host}
             if [ -z "$db_host" ]; then
                 read -p "Enter DB host (default: localhost): " db_host
