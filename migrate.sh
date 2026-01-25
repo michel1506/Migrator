@@ -529,6 +529,7 @@ def connect(conf, server_side=False):
         password=conf["password"],
         database=conf["database"],
         charset="utf8mb4",
+        use_unicode=False,
         autocommit=False,
         cursorclass=pymysql.cursors.SSCursor if server_side else pymysql.cursors.Cursor,
     )
