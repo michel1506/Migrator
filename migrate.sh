@@ -528,8 +528,7 @@ def connect(conf, server_side=False):
         user=conf["user"],
         password=conf["password"],
         database=conf["database"],
-        charset="utf8mb4",
-        use_unicode=False,
+        charset="latin1",
         autocommit=False,
         cursorclass=pymysql.cursors.SSCursor if server_side else pymysql.cursors.Cursor,
     )
@@ -546,8 +545,6 @@ try:
             (dst["database"],),
         )
         for (table_name,) in dst_cur.fetchall():
-            if isinstance(table_name, bytes):
-                table_name = table_name.decode('utf-8')
             dst_cur.execute(f"DROP TABLE IF EXISTS `{table_name}`")
         dst_conn.commit()
 
@@ -566,7 +563,7 @@ try:
             "SELECT table_name FROM information_schema.tables WHERE table_schema=%s AND table_type='BASE TABLE'",
             (src["database"],),
         )
-        tables = [row[0].decode('utf-8') if isinstance(row[0], bytes) else row[0] for row in meta_cur.fetchall()]
+        tables = [row[0] for row in meta_cur.fetchall()]
 
         total_tables = len(tables)
         current_index = 0
@@ -576,14 +573,12 @@ try:
             render_progress(current_index, total_tables, table)
             meta_cur.execute(f"SHOW CREATE TABLE `{table}`")
             create_sql = meta_cur.fetchone()[1]
-            if isinstance(create_sql, bytes):
-                create_sql = create_sql.decode('utf-8')
             dst_cur.execute(create_sql)
             dst_conn.commit()
 
             with data_conn.cursor() as data_cur:
                 data_cur.execute(f"SELECT * FROM `{table}`")
-                columns = [desc[0].decode('utf-8') if isinstance(desc[0], bytes) else desc[0] for desc in data_cur.description]
+                columns = [desc[0] for desc in data_cur.description]
                 if not columns:
                     continue
 
