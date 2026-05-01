@@ -486,11 +486,22 @@ run_wp_migration() {
     return 0
 }
 
+# Older mysqldump / some MariaDB builds reject unknown long options (e.g. --set-gtid-purged=OFF).
+mysqldump_supports_option() {
+    mysqldump --help 2>/dev/null | grep -q -- "$1"
+}
+
 run_mysqldump_to_mysql() {
     local src_host="$1" src_port="$2" src_user="$3" src_pass="$4" src_db="$5"
     local dst_host="$6" dst_port="$7" dst_user="$8" dst_pass="$9" dst_db="${10}"
 
-    local dump_opts=(--single-transaction --routines --events --triggers --set-gtid-purged=OFF --no-tablespaces)
+    local dump_opts=(--single-transaction --routines --events --triggers)
+    if mysqldump_supports_option '--set-gtid-purged'; then
+        dump_opts+=(--set-gtid-purged=OFF)
+    fi
+    if mysqldump_supports_option '--no-tablespaces'; then
+        dump_opts+=(--no-tablespaces)
+    fi
     if mysqldump --help 2>/dev/null | grep -q -- '--skip-definer'; then
         dump_opts+=(--skip-definer)
         mysqldump -h "${src_host:-localhost}" -P "$src_port" -u "$src_user" -p"$src_pass" "${dump_opts[@]}" "$src_db" \
@@ -787,7 +798,14 @@ backup_destination_db() {
         ensure_backup_root
         DB_BACKUP_FILE="$BACKUP_ROOT/destination_db.sql"
         print_info "Creating destination database backup..."
-        mysqldump -h "${host:-localhost}" -P "$port" -u "$user" -p"$pass" --single-transaction --routines --events --triggers --set-gtid-purged=OFF --no-tablespaces "$name" > "$DB_BACKUP_FILE"
+        local bk_opts=(--single-transaction --routines --events --triggers)
+        if mysqldump_supports_option '--set-gtid-purged'; then
+            bk_opts+=(--set-gtid-purged=OFF)
+        fi
+        if mysqldump_supports_option '--no-tablespaces'; then
+            bk_opts+=(--no-tablespaces)
+        fi
+        mysqldump -h "${host:-localhost}" -P "$port" -u "$user" -p"$pass" "${bk_opts[@]}" "$name" > "$DB_BACKUP_FILE"
         if [ $? -ne 0 ]; then
             print_error "Failed to backup destination database."
             exit 1
