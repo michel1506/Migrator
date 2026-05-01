@@ -741,6 +741,7 @@ ensure_backup_root() {
         print_error "Failed to create backup directory: $BACKUP_ROOT"
         exit 1
     fi
+    print_info "Backup root (absolute): $(cd "$BACKUP_ROOT" && pwd)"
 }
 
 backup_destination_files() {
@@ -758,6 +759,7 @@ backup_destination_files() {
             exit 1
         fi
         print_info "Creating destination files backup..."
+        print_info "Files backup directory (absolute): $(cd "$FILES_BACKUP_DIR" && pwd)"
         rsync -a "$dest_domain"/ "$FILES_BACKUP_DIR"/
         if [ $? -ne 0 ]; then
             print_error "Failed to backup destination files."
@@ -798,6 +800,7 @@ backup_destination_db() {
         ensure_backup_root
         DB_BACKUP_FILE="$BACKUP_ROOT/destination_db.sql"
         print_info "Creating destination database backup..."
+        print_info "Database backup file (absolute): $(cd "$(dirname "$DB_BACKUP_FILE")" && pwd)/$(basename "$DB_BACKUP_FILE")"
         local bk_opts=(--single-transaction --routines --events --triggers)
         if mysqldump_supports_option '--set-gtid-purged'; then
             bk_opts+=(--set-gtid-purged=OFF)
