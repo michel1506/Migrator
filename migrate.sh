@@ -867,10 +867,53 @@ restore_destination_db_from_backup() {
     return 0
 }
 
-cleanup_backup_artifacts() {
-    if [ -n "$BACKUP_ROOT" ] && [ -d "$BACKUP_ROOT" ]; then
-        rm -rf "$BACKUP_ROOT"
+# Remove a backup tree reliably (permissions, verify gone).
+remove_backup_dir_forcefully() {
+    local target="$1"
+    [ -n "$target" ] || return 0
+    [ -e "$target" ] || return 0
+
+    chmod -R u+rwx "$target" 2>/dev/null
+    rm -rf "$target"
+    if [ -e "$target" ]; then
+        print_info "Retrying removal with relaxed permissions: $target"
+        chmod -R u+rwx "$target" 2>/dev/null
+        find "$target" -mindepth 1 -delete 2>/dev/null
+        find "$target" -delete 2>/dev/null
+        rm -rf "$target" 2>/dev/null
     fi
+    if [ -e "$target" ]; then
+        print_error "Could not fully remove backup path: $target"
+        return 1
+    fi
+    return 0
+}
+
+cleanup_backup_artifacts() {
+    local base=".migrator-backups"
+
+    if [ -n "$BACKUP_ROOT" ] && [ -e "$BACKUP_ROOT" ]; then
+        print_info "Removing backup directory: $BACKUP_ROOT"
+        remove_backup_dir_forcefully "$BACKUP_ROOT" || print_error "Primary backup removal reported an error."
+    fi
+
+    # Also remove any older/partial backup runs for this destination (e.g. failed runs, 0-byte dumps).
+    if [ -n "$dest_domain" ] && [ -d "$base" ]; then
+        local d
+        shopt -s nullglob
+        for d in "$base"/"${dest_domain}.backup."*; do
+            if [ -e "$d" ]; then
+                print_info "Removing stale backup directory: $d"
+                remove_backup_dir_forcefully "$d" || print_error "Removal reported an error for: $d"
+            fi
+        done
+        shopt -u nullglob
+        if [ -d "$base" ] && [ -z "$(ls -A "$base" 2>/dev/null)" ]; then
+            rmdir "$base" 2>/dev/null && print_info "Removed empty Migrator backup parent: $base"
+        fi
+    fi
+
+    BACKUP_ROOT=""
 }
 
 perform_rollback() {
