@@ -34,3 +34,7 @@ file_copy:
   exclude_paths: "wp-content/cache,wp-content/w3tc-cache,wp-content/wp-rocket-cache,wp-content/litespeed,wp-content/debug.log,wp-content/*.log,wp-content/backup,*.zip,*.tar.gz"
   # If true and dest already has wp-content/uploads, keep it and rsync incrementally
   incremental_media: true
+
+backup:
+  # Action prompt after successful migration: delete (default) or revert
+  success_action_default: "delete"

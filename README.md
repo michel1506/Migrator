@@ -27,6 +27,8 @@ Migrate a domain folder and optionally its MySQL database using `migrate.sh`.
 
 Copy `migrate.config.example.yaml`, adjust values, then run with `--config`. Any missing values still prompt interactively. Set `db.method` to `python` (software migration) or `mysql` (mysqldump|mysql). Set `db.source_from_env` to choose whether the source DB is read from the source domain env file. Set `db.update_sales_channel_url` to update `sales_channel_domain.url` after migration. The destination database is always cleared before import.
 
+Before destructive operations, the script creates a backup of destination files and (when DB migration is enabled) the destination database. If migration fails, rollback automatically restores the destination. After success, the script prompts whether to delete or revert the backup; `backup.success_action_default` controls the prompt default.
+
 ```yaml
 source_domain: "example.com"
 dest_domain: "staging.example.com"
@@ -58,4 +60,7 @@ file_copy:
 
 env_update:
   update_domains: true
+
+backup:
+  success_action_default: "delete"
 ```

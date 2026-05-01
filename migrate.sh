@@ -31,6 +31,23 @@ show_help() {
 DB_ONLY=false
 DB_MIGRATE=false
 CONFIG_FILE=""
+BACKUP_ROOT=""
+FILES_BACKUP_DIR=""
+DB_BACKUP_FILE=""
+BACKUP_CREATED=false
+FILES_BACKUP_CREATED=false
+DB_BACKUP_CREATED=false
+DEST_DIR_EXISTED_BEFORE=false
+DEST_DB_EXISTED_BEFORE=false
+DEST_DB_CREATED=false
+BACKUP_DB_HOST=""
+BACKUP_DB_PORT=""
+BACKUP_DB_USER=""
+BACKUP_DB_PASS=""
+BACKUP_DB_NAME=""
+ROLLBACK_IN_PROGRESS=false
+ROLLBACK_COMPLETED=false
+CFG_BACKUP_SUCCESS_DEFAULT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --db-only)
@@ -150,6 +167,7 @@ emit('CFG_DELETE_EXISTING', get_path(data, ['file_copy', 'delete_existing']))
 emit('CFG_COPY_EXCLUDE_PATHS', get_path(data, ['file_copy', 'exclude_paths']))
 emit('CFG_INCREMENTAL_MEDIA', get_path(data, ['file_copy', 'incremental_media']))
 emit('CFG_UPDATE_DOMAINS', get_path(data, ['env_update', 'update_domains']))
+emit('CFG_BACKUP_SUCCESS_DEFAULT', get_path(data, ['backup', 'success_action_default']))
 PY
 )"
 }
@@ -249,6 +267,7 @@ ensure_destination_db() {
             print_error "Failed to create destination database."
             exit 1
         fi
+        DEST_DB_CREATED=true
         print_success "Created destination database '$name'."
     fi
 }
@@ -267,31 +286,26 @@ delete_dest_contents() {
     local dest="$1"
     local keep_media="$2"
     local keep_wp_uploads="$3"
-    local delete_status=1
+    local delete_status=0
     local attempts=0
 
     while [ $attempts -lt 3 ]; do
+        empty_dir=$(mktemp -d)
         if [ "$keep_media" = true ] || [ "$keep_wp_uploads" = true ]; then
-            find "$dest" \
-                \( -path "$dest/public/media" -o -path "$dest/public/media/*" -o -path "$dest/wp-content/uploads" -o -path "$dest/wp-content/uploads/*" \) -prune \
-                -o -mindepth 1 -exec rm -rf {} + 2>/dev/null
+            rsync_filters=()
+            if [ "$keep_media" = true ]; then
+                rsync_filters+=("--filter=P /public/media/***")
+            fi
+            if [ "$keep_wp_uploads" = true ]; then
+                rsync_filters+=("--filter=P /wp-content/uploads/***")
+            fi
+            rsync -a --delete --force --ignore-errors "${rsync_filters[@]}" "$empty_dir"/ "$dest"/ >/dev/null 2>&1
             delete_status=$?
         else
-            if command -v rsync >/dev/null 2>&1; then
-                empty_dir=$(mktemp -d)
-                rsync -a --delete --force --ignore-errors --info=progress2 "$empty_dir"/ "$dest"/
-                delete_status=$?
-                rmdir "$empty_dir" 2>/dev/null
-            else
-                delete_status=1
-            fi
-
-            if [ $delete_status -ne 0 ]; then
-                print_info "Retrying delete with rm -rf..."
-                find "$dest" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null
-                delete_status=$?
-            fi
+            rsync -a --delete --force --ignore-errors "$empty_dir"/ "$dest"/ >/dev/null 2>&1
+            delete_status=$?
         fi
+        rmdir "$empty_dir" 2>/dev/null
 
         if [ "$keep_media" = true ] || [ "$keep_wp_uploads" = true ]; then
             remaining_count=$(find "$dest" \
@@ -301,7 +315,7 @@ delete_dest_contents() {
             remaining_count=$(find "$dest" -type f | wc -l)
         fi
 
-        if [ "$remaining_count" -eq 0 ]; then
+        if [ $delete_status -eq 0 ] && [ "$remaining_count" -eq 0 ]; then
             return 0
         fi
 
@@ -704,6 +718,207 @@ parse_database_url() {
     echo "$user|$pass|$host|$port|$db"
 }
 
+ensure_backup_root() {
+    if [ -n "$BACKUP_ROOT" ] && [ -d "$BACKUP_ROOT" ]; then
+        return 0
+    fi
+    local timestamp
+    timestamp=$(date +%Y%m%d_%H%M%S)
+    BACKUP_ROOT=".migrator-backups/${dest_domain}.backup.${timestamp}.$$"
+    mkdir -p "$BACKUP_ROOT"
+    if [ $? -ne 0 ]; then
+        print_error "Failed to create backup directory: $BACKUP_ROOT"
+        exit 1
+    fi
+}
+
+backup_destination_files() {
+    if [ "$DB_ONLY" = true ] || [ "$FILES_BACKUP_CREATED" = true ]; then
+        return 0
+    fi
+
+    if [ -d "$dest_domain" ]; then
+        DEST_DIR_EXISTED_BEFORE=true
+        ensure_backup_root
+        FILES_BACKUP_DIR="$BACKUP_ROOT/files"
+        mkdir -p "$FILES_BACKUP_DIR"
+        if [ $? -ne 0 ]; then
+            print_error "Failed to create files backup directory."
+            exit 1
+        fi
+        print_info "Creating destination files backup..."
+        rsync -a "$dest_domain"/ "$FILES_BACKUP_DIR"/
+        if [ $? -ne 0 ]; then
+            print_error "Failed to backup destination files."
+            exit 1
+        fi
+        FILES_BACKUP_CREATED=true
+        BACKUP_CREATED=true
+        print_success "Destination files backup created."
+    else
+        DEST_DIR_EXISTED_BEFORE=false
+    fi
+}
+
+backup_destination_db() {
+    local host="$1"
+    local port="$2"
+    local user="$3"
+    local pass="$4"
+    local name="$5"
+
+    if [ "$DB_MIGRATE" != true ] || [ "$DB_BACKUP_CREATED" = true ]; then
+        return 0
+    fi
+
+    if ! command -v mysqldump >/dev/null 2>&1 || ! command -v mysql >/dev/null 2>&1; then
+        print_error "mysqldump and mysql are required for database backup/rollback safety."
+        exit 1
+    fi
+
+    BACKUP_DB_HOST="$host"
+    BACKUP_DB_PORT="$port"
+    BACKUP_DB_USER="$user"
+    BACKUP_DB_PASS="$pass"
+    BACKUP_DB_NAME="$name"
+
+    if db_exists "$host" "$port" "$user" "$pass" "$name"; then
+        DEST_DB_EXISTED_BEFORE=true
+        ensure_backup_root
+        DB_BACKUP_FILE="$BACKUP_ROOT/destination_db.sql"
+        print_info "Creating destination database backup..."
+        mysqldump -h "${host:-localhost}" -P "$port" -u "$user" -p"$pass" --single-transaction --routines --events --triggers --set-gtid-purged=OFF --no-tablespaces "$name" > "$DB_BACKUP_FILE"
+        if [ $? -ne 0 ]; then
+            print_error "Failed to backup destination database."
+            exit 1
+        fi
+        DB_BACKUP_CREATED=true
+        BACKUP_CREATED=true
+        print_success "Destination database backup created."
+    else
+        DEST_DB_EXISTED_BEFORE=false
+        print_info "Destination database does not exist yet. Rollback will remove newly created DB if needed."
+    fi
+}
+
+restore_destination_files_from_backup() {
+    if [ "$FILES_BACKUP_CREATED" = true ]; then
+        print_info "Restoring destination files from backup..."
+        mkdir -p "$dest_domain"
+        delete_dest_contents "$dest_domain" false false
+        if [ $? -ne 0 ]; then
+            return 1
+        fi
+        rsync -a --delete "$FILES_BACKUP_DIR"/ "$dest_domain"/
+        return $?
+    fi
+
+    if [ "$DEST_DIR_EXISTED_BEFORE" = false ] && [ -d "$dest_domain" ]; then
+        print_info "Removing newly created destination directory..."
+        rm -rf "$dest_domain"
+        return $?
+    fi
+
+    return 0
+}
+
+restore_destination_db_from_backup() {
+    if [ "$DB_MIGRATE" != true ] || [ -z "$BACKUP_DB_NAME" ] || [ -z "$BACKUP_DB_USER" ]; then
+        return 0
+    fi
+
+    if [ "$DB_BACKUP_CREATED" = true ] && [ -n "$DB_BACKUP_FILE" ] && [ -f "$DB_BACKUP_FILE" ]; then
+        print_info "Restoring destination database from backup..."
+        mysql -h "${BACKUP_DB_HOST:-localhost}" -P "${BACKUP_DB_PORT:-3306}" -u "$BACKUP_DB_USER" -p"$BACKUP_DB_PASS" -e "CREATE DATABASE IF NOT EXISTS \`$BACKUP_DB_NAME\`;" >/dev/null 2>&1 || return 1
+        drop_sql=$(mysql -h "${BACKUP_DB_HOST:-localhost}" -P "${BACKUP_DB_PORT:-3306}" -u "$BACKUP_DB_USER" -p"$BACKUP_DB_PASS" -N -e "SELECT CONCAT('DROP TABLE IF EXISTS \`', table_name, '\`;') FROM information_schema.tables WHERE table_schema='${BACKUP_DB_NAME}' AND table_type IN ('BASE TABLE','VIEW');") || return 1
+        if [ -n "$drop_sql" ]; then
+            echo "SET FOREIGN_KEY_CHECKS=0; $drop_sql SET FOREIGN_KEY_CHECKS=1;" | mysql -h "${BACKUP_DB_HOST:-localhost}" -P "${BACKUP_DB_PORT:-3306}" -u "$BACKUP_DB_USER" -p"$BACKUP_DB_PASS" "$BACKUP_DB_NAME" >/dev/null 2>&1 || return 1
+        fi
+        mysql -h "${BACKUP_DB_HOST:-localhost}" -P "${BACKUP_DB_PORT:-3306}" -u "$BACKUP_DB_USER" -p"$BACKUP_DB_PASS" "$BACKUP_DB_NAME" < "$DB_BACKUP_FILE" >/dev/null 2>&1 || return 1
+        return 0
+    fi
+
+    if [ "$DEST_DB_EXISTED_BEFORE" = false ] && [ "$DEST_DB_CREATED" = true ]; then
+        print_info "Dropping destination database created during failed migration..."
+        mysql -h "${BACKUP_DB_HOST:-localhost}" -P "${BACKUP_DB_PORT:-3306}" -u "$BACKUP_DB_USER" -p"$BACKUP_DB_PASS" -e "DROP DATABASE IF EXISTS \`$BACKUP_DB_NAME\`;" >/dev/null 2>&1 || return 1
+    fi
+
+    return 0
+}
+
+cleanup_backup_artifacts() {
+    if [ -n "$BACKUP_ROOT" ] && [ -d "$BACKUP_ROOT" ]; then
+        rm -rf "$BACKUP_ROOT"
+    fi
+}
+
+perform_rollback() {
+    if [ "$BACKUP_CREATED" != true ] && [ "$DEST_DB_CREATED" != true ]; then
+        print_info "No backup state available, nothing to rollback."
+        return 0
+    fi
+
+    ROLLBACK_IN_PROGRESS=true
+    local failed=false
+
+    restore_destination_files_from_backup || failed=true
+    restore_destination_db_from_backup || failed=true
+
+    ROLLBACK_IN_PROGRESS=false
+
+    if [ "$failed" = true ]; then
+        return 1
+    fi
+
+    ROLLBACK_COMPLETED=true
+    return 0
+}
+
+handle_success_backup_action() {
+    if [ "$BACKUP_CREATED" != true ]; then
+        return 0
+    fi
+
+    local default_action="delete"
+    local config_default
+    config_default=$(echo "${CFG_BACKUP_SUCCESS_DEFAULT:-}" | tr '[:upper:]' '[:lower:]')
+    if [ "$config_default" = "revert" ] || [ "$config_default" = "restore" ]; then
+        default_action="revert"
+    fi
+
+    local backup_choice
+    read -p "Migration succeeded. Backup action? delete/revert [default: $default_action]: " backup_choice
+    backup_choice=$(echo "${backup_choice:-$default_action}" | tr '[:upper:]' '[:lower:]')
+
+    if [ "$backup_choice" = "revert" ] || [ "$backup_choice" = "restore" ] || [ "$backup_choice" = "r" ]; then
+        print_info "Reverting destination to the pre-migration backup..."
+        perform_rollback
+        if [ $? -ne 0 ]; then
+            print_error "Failed to revert destination from backup."
+            return 1
+        fi
+        print_success "Destination restored from backup."
+        return 0
+    fi
+
+    cleanup_backup_artifacts
+    print_success "Backup deleted."
+    return 0
+}
+
+on_exit_migration() {
+    local status=$?
+    if [ "$status" -ne 0 ] && [ "$ROLLBACK_IN_PROGRESS" != true ] && [ "$ROLLBACK_COMPLETED" != true ]; then
+        print_error "Migration failed. Starting automatic rollback..."
+        perform_rollback
+        if [ $? -eq 0 ]; then
+            print_success "Rollback completed. Destination was restored."
+        else
+            print_error "Automatic rollback failed. Backup remains at: $BACKUP_ROOT"
+        fi
+    fi
+}
+
 # ========================================
 # WordPress Migration Function
 # ========================================
@@ -803,6 +1018,7 @@ migrate_wordpress() {
         fi
 
         print_info "Destination WordPress DB: ${dest_db_name} @ ${dest_db_host}:${dest_db_port} (user: ${dest_db_user})"
+        backup_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
     fi
 
     # File copy
@@ -992,6 +1208,7 @@ migrate_shopware() {
                 ensure_pymysql_available
             fi
 
+            backup_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
             ensure_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
 
             print_info "Migrating database..."
@@ -1132,6 +1349,7 @@ migrate_shopware() {
                 ensure_pymysql_available
             fi
 
+            backup_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
             ensure_destination_db "$dest_db_host" "$dest_db_port" "$dest_db_user" "$dest_db_pass" "$dest_db_name"
 
             print_info "Migrating database..."
@@ -1274,6 +1492,8 @@ copy_files_common() {
         excludes+=("--exclude=wp-content/uploads/")
     fi
 
+    backup_destination_files
+
     # Create destination directory if it doesn't exist
     if [ -d "$dest_domain" ]; then
         # Check if destination directory contains any files
@@ -1350,6 +1570,8 @@ copy_files_common() {
         exit 1
     fi
 }
+
+trap on_exit_migration EXIT
 
 # Load config if provided
 if [ -n "$CONFIG_FILE" ]; then
@@ -1440,6 +1662,11 @@ if [ "$cms_type" = "wordpress" ]; then
     migrate_wordpress
 else
     migrate_shopware
+fi
+
+handle_success_backup_action
+if [ $? -ne 0 ]; then
+    exit 1
 fi
 
 print_success "Migration completed!"

@@ -38,3 +38,7 @@ file_copy:
 
 env_update:
   update_domains: true
+
+backup:
+  # Action prompt after successful migration: delete (default) or revert
+  success_action_default: "delete"
