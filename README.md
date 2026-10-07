@@ -2,6 +2,21 @@
 
 Migrate a domain folder and optionally its MySQL database using `migrate.sh`.
 
+
+## SSH quick start
+
+Migrator is a command-line script, not a hosted service. With SSH access to the hosting account, run it from the directory containing the source and destination website folders:
+
+```bash
+ssh <user>@<server>
+cd /path/to/hosting
+# Download once; reuse the checkout for later runs.
+git clone https://github.com/michel1506/Migrator.git
+bash Migrator/migrate.sh
+```
+
+Replace the placeholders with your hosting details. Follow the prompts for the source folder, destination folder, database copy and domain updates. For Shopware, use a separate destination database and enable the sales-channel URL and environment-domain updates. Existing destination data is overwritten after backup; check staging mail and external integrations before testing. Requirements are listed below.
+
 ## Requirements
 
 - Bash environment (e.g., Git Bash on Windows)
